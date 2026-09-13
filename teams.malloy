@@ -1,0 +1,83 @@
+// =====================================================================
+//  TEAM-GAMES — one row per team per game
+//
+//  The grain a team ranking is asked at. Every game appears twice, once
+//  from each side (see team_games_raw in raw.malloy), and each row joins
+//  the drives that team ran and the drives it defended in that game.
+//
+//  The two join_many's fan a row out to offense drives x defense drives
+//  (about 12 x 12 per game). Malloy's symmetric aggregates keep every
+//  measure exact through that — count() counts team-games, not the
+//  fanned-out rows, and offense_drives.points_per_drive averages at the
+//  drive grain.
+// =====================================================================
+
+import "raw.malloy"
+import "drives.malloy"
+
+#|(doc)
+  One row per team per game in the 2025 and 2026 seasons: every game appears twice, once
+  from each team's side, with points for and against, the team's and opponent's conference
+  and division, and pregame and postgame Elo. Joins the drives the team ran and the drives it
+  defended, so a team's record, scoring margin and drive efficiency on both sides of the ball
+  come from one source. Use it for team rankings, records and strength of schedule.
+|#
+source: team_games is team_games_raw extend {
+
+  primary_key: team_game_id
+
+  #(doc) The drives this team ran on offense in this game.
+  join_many: offense_drives is drives_base on game_id = offense_drives.GameId and team = offense_drives.Offense
+
+  #(doc) The drives this team defended in this game — its opponent's possessions.
+  join_many: defense_drives is drives_base on game_id = defense_drives.GameId and team = defense_drives.Defense
+
+  dimension:
+
+    #(doc) Season year as text, for example 2026. What the season picker filters on.
+    season_label is season::string
+
+    #(doc) The week as a reader names it: Week 1 through Week 16, or Postseason.
+    week_label is
+      pick 'Postseason' when season_type = 'postseason'
+      else concat('Week ', week_number::string)
+
+    #(doc) True when the game is over and this team won it.
+    is_win is completed and points_for > points_against
+
+    #(doc) True when the game is over and this team lost it.
+    is_loss is completed and points_for < points_against
+
+    #(doc) This team's points minus its opponent's.
+    scoring_margin is points_for - points_against
+
+  measure:
+
+    #(doc) Number of completed games played.
+    games_played is count() { where: completed }
+
+    #(doc) Games won.
+    wins is count() { where: is_win }
+
+    #(doc) Games lost.
+    losses is count() { where: is_loss }
+
+    #(doc) Share of completed games won.
+    # percent
+    win_rate is count() { where: is_win } / nullif(count() { where: completed }, 0)
+
+    #(doc) Average points scored per completed game.
+    points_per_game is avg(points_for) { where: completed }
+
+    #(doc) Average points allowed per completed game.
+    points_allowed_per_game is avg(points_against) { where: completed }
+
+    #(doc) Average scoring margin per completed game. Positive means the team outscores its opponents.
+    avg_scoring_margin is avg(scoring_margin) { where: completed }
+
+    #(doc) The team's Elo rating after its most recent rated game: where the rating stands now. Higher is stronger; roughly 1500 is average.
+    current_elo is max(postgame_elo) { where: is_latest_rated_game }
+
+    #(doc) Strength of schedule: the average pregame Elo rating of the opponents played. Higher means a tougher schedule.
+    strength_of_schedule is avg(opponent_pregame_elo) { where: completed }
+}

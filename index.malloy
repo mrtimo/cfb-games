@@ -1,0 +1,109 @@
+// =====================================================================
+//  INDEX — the published query surface, 2025 and 2026 seasons
+//
+//  games.malloy, drives.malloy and teams.malloy hold the documented base
+//  sources. This file joins games and drives on game id and exports the
+//  three consumer-facing sources:
+//
+//      games       -> one row per game,           with its drives joined in
+//      drives      -> one row per drive,          with its game joined in
+//      team_games  -> one row per team per game,  with both sides' drives
+// =====================================================================
+
+import "raw.malloy"
+import "games.malloy"
+import "drives.malloy"
+import "teams.malloy"
+
+#(doc) Number of drives the raw feed carries for each game. A cheap test for whether a game has drive detail, without building the full drive model.
+source: game_drive_counts is drives_raw -> {
+  group_by: GameId
+  aggregate: drive_rows is count()
+}
+
+#|(doc)
+  One row per college football game in the 2025 and 2026 seasons, with every drive of that
+  game joined in. Carries the final score, line score, venue, conferences, Elo, CFBD's
+  excitement rating and a box-score thrill index, plus drive-level totals. Use it for
+  schedules, results, the most exciting games, and game summaries.
+|#
+source: games is games_base extend {
+
+  #(doc) Every drive played in this game, one row per possession.
+  join_many: drives is drives_base on Id = drives.GameId
+
+  #(doc) How many drives the feed has for this game.
+  join_one: drive_counts is game_drive_counts on Id = drive_counts.GameId
+
+  dimension:
+
+    #(doc) True when this game has drive-by-drive detail, so a drive chart can be drawn. Division I games have it; Division II and III games do not.
+    has_drive_detail is coalesce(drive_counts.drive_rows, 0) > 0
+
+  measure:
+
+    #(doc) Number of drives (possessions) played.
+    drive_count is drives.count()
+
+    #(doc) Average points scored per possession by both teams combined.
+    points_per_drive is drives.points_per_drive
+
+    #(doc) Share of possessions that ended in a three-and-out punt.
+    # percent
+    three_and_out_rate is drives.three_and_out_rate
+}
+
+#|(doc)
+  One row per drive (possession) of the 2025 and 2026 college football seasons, with the game
+  it was played in joined in. Use it for offensive and defensive drive efficiency, Eckel rate,
+  field position, scoring rates, and drive-by-drive game charts.
+|#
+source: drives is drives_base extend {
+
+  #(doc) The game this drive was played in, with its date, teams, venue and final score.
+  join_one: game is games_base on GameId = game.Id
+
+  dimension:
+
+    #(doc) Season the drive was played in, as text, for example 2026.
+    season_label is game.season_label
+
+    #(doc) Home team of the game this drive was played in.
+    home_team is game.HomeTeam
+
+    #(doc) Away team of the game this drive was played in.
+    away_team is game.AwayTeam
+
+  #(doc) Every possession of one game, in order, with the geometry and score ledger a drive chart draws from. Filter it to a single GameId.
+  view: game_drive_chart is {
+    group_by:
+      drive_id is Id
+      game_id is GameId
+      home_team
+      away_team
+      drive_number is DriveNumber
+      offense is Offense
+      defense is Defense
+      is_home_offense is IsHomeOffense
+      quarter_label
+      start_period is StartPeriod
+      // absolute field coordinates: 0 = the goal line the away team
+      // attacks, 100 = the goal line the home team attacks
+      start_yardline is chart_start_yardline
+      end_yardline is chart_end_yardline
+      start_field_position
+      end_field_position
+      plays is Plays
+      yards is Yards
+      result_category
+      result_abbreviation
+      drive_points
+      defensive_points_scored
+      defensive_score_type
+      home_score_after
+      away_score_after
+    order_by: drive_number
+  }
+}
+
+export { games, drives, team_games }

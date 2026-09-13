@@ -1,0 +1,21 @@
+:root{--bg:#fbfbfc;--fg:#16181d;--muted:#6b7280;--card:#fff;--line:#e4e6eb;--accent:#2a78d6}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e8eaed;--muted:#9aa1ac;--card:#1c1f25;--line:#2c3038;--accent:#4f9bff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.index{max-width:760px;margin:0 auto;padding:48px 20px}
+.index h1{font-size:22px;font-weight:650;margin:0 0 22px}
+.index ul{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+.index a{display:flex;flex-direction:column;gap:3px;padding:16px 18px;border:1px solid var(--line);border-radius:12px;background:var(--card);text-decoration:none;color:inherit}
+.index a:hover{border-color:var(--accent)}
+.index span{font-size:13px;color:var(--muted)}
+
+.dash-nav{display:flex;gap:4px;align-items:center;padding:8px 14px;background:#000;font:13px system-ui,-apple-system,sans-serif;flex-wrap:wrap}
+/* The home icon is an <a> too, so it opts OUT of the switcher-link padding and
+   keeps its own square hit area. */
+.dash-nav a.brand{display:inline-flex;align-items:center;justify-content:center;color:#9aa1ac;padding:5px;border-radius:6px;text-decoration:none}
+.dash-nav a.brand:hover{background:#1f232a;color:#fff}
+.dash-nav .brand svg{display:block}
+.dash-nav .sep{width:1px;align-self:stretch;background:#2c3038;margin:0 10px}
+.dash-nav a{padding:4px 10px;border-radius:6px;text-decoration:none;color:#c9ced6}
+.dash-nav a:hover{background:#1f232a;color:#fff}
+.dash-nav a.on{background:#fff;color:#000;font-weight:550}

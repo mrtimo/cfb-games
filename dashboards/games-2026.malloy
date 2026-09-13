@@ -1,0 +1,94 @@
+##! experimental { givens }
+
+// =====================================================================
+//  2026 GAMES
+//
+//  Every game of the 2026 season as a scoreboard card, filtered by team,
+//  conference, division and week, and sorted by the reader (kickoff,
+//  thrill index, CFBD excitement, margin, points, upset).
+//
+//  The component (games-2026.tsx) is generated from
+//  components/games-report.tsx by sync-components.mjs and is identical
+//  to games-2025.tsx: everything season-specific lives in THIS file.
+//  Edit the component there, not here.
+// =====================================================================
+
+import "../index.malloy"
+import "../givens.malloy"
+
+#" Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.
+# artifact { title="2026 Games" givens { SEASON='2026' } }
+query: games_list is games -> {
+  where:
+    Season = 2026,
+    // pinned above; referenced so the pickers' suggest queries narrow to
+    // this season too
+    season_label ~ $SEASON,
+    HomeTeam ~ $TEAM or AwayTeam ~ $TEAM,
+    HomeConference ~ $CONFERENCE or AwayConference ~ $CONFERENCE,
+    HomeClassification ~ $DIVISION or AwayClassification ~ $DIVISION,
+    week_label ~ $GAME_WEEK
+
+  group_by:
+    // ---- when and where ----
+    game_id is Id
+    season is Season
+    week_label
+    week_sort
+    start_date is StartDate
+    start_time_tbd is StartTimeTBD
+    completed is Completed
+    neutral_site is NeutralSite
+    conference_game is ConferenceGame
+    venue is Venue
+    attendance is Attendance
+    notes is Notes
+    bowl is `Playoff BowlName`
+    playoff_round is `Playoff RoundName`
+    has_drive_detail
+
+    // ---- the two teams ----
+    away_team is AwayTeam
+    away_conference is AwayConference
+    away_classification is AwayClassification
+    away_points is AwayPoints
+    away_line_scores is AwayLineScores
+    away_pregame_elo is AwayPregameElo
+    away_seed is `Playoff AwaySeed`
+    home_team is HomeTeam
+    home_conference is HomeConference
+    home_classification is HomeClassification
+    home_points is HomePoints
+    home_line_scores is HomeLineScores
+    home_pregame_elo is HomePregameElo
+    home_seed is `Playoff HomeSeed`
+
+    // ---- how it went ----
+    victory_margin
+    total_points
+    is_overtime
+    is_elo_upset
+    is_comeback_win
+    pregame_elo_edge
+    excitement_index is ExcitementIndex
+    thrill_index
+    thrill_tier
+    thrill_closeness
+    thrill_late_drama
+    thrill_comeback
+    thrill_overtime
+    thrill_scoring
+    thrill_upset
+    thrill_stakes
+
+  order_by: start_date, game_id
+}
+
+#" Every possession of every game the selected team played this season, for its drive charts.
+query: team_game_drives is drives -> game_drive_chart + {
+  where:
+    game.Season = 2026,
+    season_label ~ $SEASON,
+    Offense ~ $TEAM or Defense ~ $TEAM,
+    game.week_label ~ $GAME_WEEK
+}

@@ -1,0 +1,974 @@
+##! experimental.access_modifiers
+
+import "raw.malloy"
+
+// =====================================================================
+//  DRIVES — one row per possession, 2025 and 2026 seasons
+//
+//  Source: drives_raw (raw.malloy), the CollegeFootballData (CFBD)
+//  /drives feed read from huggingface.co/datasets/24601p/cfb-data, one
+//  parquet file per season. Adapted from ../drives.malloy, the 2025-only
+//  model; the counts quoted in the notes below are 2025's. The addition
+//  here is the Eckel rate.
+//
+//  GRAIN: one row per drive (possession). 38,902 rows — the feed's 38,906
+//  less the 4 redundant copies dropped by drive_dedupe_context below.
+//  COVERAGE: 1,659 games — the Division I schedule. Every FBS game
+//  (808 FBS-vs-FBS plus 126 FBS-vs-FCS) and every FCS game (669
+//  FCS-vs-FCS plus 42 against lower divisions) has drive detail. The
+//  2,172 games with no drive rows are Division II and Division III
+//  matchups, which the feed does not track play by play.
+//
+//  FIELD COORDINATES — two systems, both present:
+//    * YardsToGoal   0-100, relative to the OFFENSE: the distance to the
+//                    end zone the offense is attacking. 75 = own 25.
+//    * Yardline      0-100, an absolute stripe on the field: 0 is the
+//                    goal line the AWAY team attacks, 100 is the goal
+//                    line the HOME team attacks. Verified against
+//                    YardsToGoal on 99.3% of rows. This is the coordinate
+//                    to draw a drive chart in, because both teams' drives
+//                    share it.
+//
+//  KNOWN NOISE: 52 rows have an EndYardline outside 0-100 and a handful
+//  of rows carry impossible yardage; StartPeriod 0 appears on 20 rows.
+//  The chart_* dimensions below clamp these so a drive chart stays sane.
+// =====================================================================
+
+// =====================================================================
+//  POSSESSION BOOKKEEPING
+//
+//  Three window functions the garbage-time rules need, computed in one
+//  pass over the same parquet. It reads the file directly rather than
+//  extending drives_base, because drives_base joins THIS back in and a
+//  source cannot derive from itself.
+//
+//    drives_left_in_game          this drive plus every later one
+//    offense_possessions_left     this drive plus this offense's later ones
+//    drives_left_in_period_group  the same, within first half / second
+//                                 half / overtime
+//
+//  Two identities fall out and do all the work downstream:
+//    * the last drive of anything has 1 left
+//    * the DEFENSE's remaining possessions are
+//      drives_left_in_game - offense_possessions_left, because only two
+//      teams have the ball in a game
+// =====================================================================
+
+// =====================================================================
+//  REDUNDANT COPIES — the feed sometimes lists one possession twice.
+//
+//  Every drive the feed knows carries a real id, built from the game id
+//  plus the drive number. A handful of rows instead carry a small
+//  NEGATIVE id: 58 of them across the season, and they are not junk —
+//  54 are real possessions the feed simply had no id for, including
+//  the last possession of the BYU-Arizona double overtime.
+//
+//  The other 4 are copies. Each one restates a possession that is
+//  already present under its real id — same game, same offense, same
+//  period, same plays, same yards, same starting field position — and
+//  differs only in the result string and in which lagging version of
+//  the scoreboard it carries. Left in, they draw a second BYU
+//  touchdown in the second overtime that was never scored.
+//
+//  So the rule is narrow on purpose: drop a SYNTHETIC row only when a
+//  REAL-id row of the same shape outranks it. Shape alone is far too
+//  loose — 120 rows in the season share one, nearly all of them
+//  genuinely distinct possessions in regulation (two 3-play, 6-yard
+//  punts from the same yard line in one quarter is an ordinary
+//  afternoon), and dropping those would delete real football.
+// =====================================================================
+
+#(doc) Marks each drive as either the copy the feed kept or a redundant synthetic restatement of a possession already present under its real id.
+source: drive_dedupe_context is drives_raw -> {
+  group_by:
+    #(doc) Identifier of the drive this verdict describes.
+    drive_id is Id
+
+    #(doc) The facts that make two rows the same possession: game, offense, period, plays, yards and starting field position.
+    possession_shape is concat(
+      GameId::string, '|', Offense, '|', StartPeriod::string, '|',
+      Plays::string, '|', Yards::string, '|', StartYardsToGoal::string
+    )
+
+  calculate:
+    #(doc) Rank of this row among rows describing the same possession, real feed ids first. 1 is the copy to keep.
+    copy_rank is row_number() { partition_by: possession_shape, order_by: drive_id desc }
+} extend {
+  primary_key: drive_id
+
+  dimension:
+    #(doc) True when this row carries a synthetic negative id AND a real-id row describes the same possession, which makes it a duplicate to drop.
+    is_redundant_copy is drive_id < 0 and copy_rank > 1
+}
+
+#(doc) The drive feed with the redundant copies removed. Everything downstream reads this rather than the raw table, so no query has to remember to filter them.
+source: drives_deduped is drives_raw extend {
+  join_one: dedupe is drive_dedupe_context on Id = dedupe.drive_id
+  where: not dedupe.is_redundant_copy
+}
+
+#(doc) Possession counts for each drive: how many possessions are left in the game, how many the team with the ball has left, and how many are left in the current half. Used to decide whether a game is still within reach.
+source: drive_possession_context is drives_deduped -> {
+  group_by:
+    #(doc) Identifier of the drive these counts describe. Join key back to the drive.
+    drive_id is Id
+
+    #(doc) Identifier of the game the drive belongs to.
+    GameId
+
+    #(doc) Team with the ball on the drive.
+    Offense
+
+    #(doc) Drive number within the game.
+    DriveNumber
+
+    #(doc) Segment of the game the drive belongs to: 1 for the first half, 2 for the second half, 3 for overtime.
+    period_group is
+      pick 1 when StartPeriod <= 2
+      pick 2 when StartPeriod <= 4
+      else 3
+
+    #(doc) Score of the team with the ball as the drive began, carried here so the next drive's copy can be compared against it.
+    start_offense_score is StartOffenseScore
+
+    #(doc) Score of the defending team as the drive began, carried here so the next drive's copy can be compared against it.
+    start_defense_score is StartDefenseScore
+
+    #(doc) Home team's score as the feed reports it at the end of the drive, before any repair.
+    raw_home_score is
+      pick EndOffenseScore when IsHomeOffense
+      else EndDefenseScore
+
+    #(doc) Away team's score as the feed reports it at the end of the drive, before any repair.
+    raw_away_score is
+      pick EndDefenseScore when IsHomeOffense
+      else EndOffenseScore
+
+  calculate:
+    #(doc) Number of possessions left in the game counting this one, so the last drive of a game has 1.
+    drives_left_in_game is row_number() { partition_by: GameId, order_by: DriveNumber desc }
+
+    #(doc) Number of possessions the team with the ball has left in the game counting this one.
+    offense_possessions_left is row_number() { partition_by: GameId, Offense, order_by: DriveNumber desc }
+
+    #(doc) Number of possessions left in this half counting this one, so the last drive of a half has 1.
+    drives_left_in_period_group is row_number() { partition_by: GameId, period_group, order_by: DriveNumber desc }
+
+    #(doc) Team with the ball on the next possession of the game. Empty on the last drive.
+    next_offense is lead(Offense) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Score of the next possession's offense as that drive began. Used to check this drive's ending scoreboard against the next drive's opening one.
+    next_start_offense_score is lead(start_offense_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Score of the next possession's defense as that drive began.
+    next_start_defense_score is lead(start_defense_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Home team's reported score on the previous possession, used to spot a scoreboard spike.
+    prev_home_score is lag(raw_home_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Home team's reported score on the next possession, used to spot a scoreboard spike.
+    next_home_score is lead(raw_home_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Away team's reported score on the previous possession.
+    prev_away_score is lag(raw_away_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) Away team's reported score on the next possession.
+    next_away_score is lead(raw_away_score) { partition_by: GameId, order_by: DriveNumber }
+}
+// ---------------------------------------------------------------------
+//  Second stage: repair the running scoreboard.
+//
+//  A score can never go down, so a value standing ABOVE both of its
+//  neighbours is the feed misreporting — in the Pop-Tarts Bowl, BYU's
+//  second possession carries the game's FINAL score (25-21) before
+//  dropping back to 0-7. Replacing each such spike with the previous
+//  possession's score takes the season from 800 drives whose ledger
+//  goes backwards to 235; a one-step monotonic guard on top takes it
+//  to 142, and neither touches the 1,571 of 1,659 games whose last
+//  drive already matches the official final.
+// ---------------------------------------------------------------------
+-> {
+  group_by:
+    drive_id
+    GameId
+    Offense
+    DriveNumber
+    period_group
+    start_offense_score
+    start_defense_score
+    drives_left_in_game
+    offense_possessions_left
+    drives_left_in_period_group
+    next_offense
+    next_start_offense_score
+    next_start_defense_score
+
+    #(doc) Home team's score after the drive, with a scoreboard spike replaced by the previous possession's score.
+    despiked_home_score is
+      pick prev_home_score
+        when prev_home_score is not null and next_home_score is not null
+          and raw_home_score > prev_home_score and raw_home_score > next_home_score
+      else raw_home_score
+
+    #(doc) Away team's score after the drive, with a scoreboard spike replaced by the previous possession's score.
+    despiked_away_score is
+      pick prev_away_score
+        when prev_away_score is not null and next_away_score is not null
+          and raw_away_score > prev_away_score and raw_away_score > next_away_score
+      else raw_away_score
+
+  calculate:
+    #(doc) The repaired home score on the previous possession, so the ledger can be held non-decreasing.
+    prev_despiked_home_score is lag(despiked_home_score) { partition_by: GameId, order_by: DriveNumber }
+
+    #(doc) The repaired away score on the previous possession.
+    prev_despiked_away_score is lag(despiked_away_score) { partition_by: GameId, order_by: DriveNumber }
+}
+extend {
+  primary_key: drive_id
+}
+
+#|(doc)
+  One row per drive (a single possession) in the 2025 and 2026 college football seasons, covering
+  the full Division I schedule: every FBS game and every FCS game. Each drive records who had the ball and who was
+  defending, when the possession started and ended on the game clock, where it started and
+  ended on the field, how many plays and yards it produced, how it ended (touchdown, field
+  goal, punt, interception, fumble, turnover on downs, end of half), and the score for both
+  teams before and after. Use it for drive efficiency, scoring rates, field position,
+  time of possession, three-and-outs, and drive-by-drive game charts. Joins to game-level
+  information on GameId.
+|#
+source: drives_base is drives_deduped
+include {
+  public:
+
+    #(doc) Unique identifier for the drive. Formed from the game id plus the drive number within the game.
+    Id
+
+    #(doc) Identifier of the game this drive belongs to. Join key to the games data, whose Id column holds the same value.
+    GameId
+
+    #(index)
+    #(doc) Team with the ball on this drive, for example Alabama or Oregon.
+    Offense
+
+    #(index)
+    #(doc) Conference of the team with the ball, for example SEC or Big Ten. Missing for independents and for the occasional non-Division-I opponent.
+    OffenseConference
+
+    #(index)
+    #(doc) Team defending on this drive.
+    Defense
+
+    #(index)
+    #(doc) Conference of the defending team. Missing for independents and for the occasional non-Division-I opponent.
+    DefenseConference
+
+    #(doc) Sequence number of the possession within the game, starting at 1. Both teams' drives share one numbering, so drive 5 is the fifth possession of the game by either team.
+    DriveNumber
+
+    #(doc) True when the drive put points on the board for either team, including defensive returns and safeties.
+    Scoring
+
+    #(doc) Quarter the drive started in: 1 through 4 for regulation, 5 and above for overtime periods.
+    StartPeriod
+
+    #(doc) Field stripe the drive started on, 0 to 100, in absolute field coordinates: 0 is the goal line the away team attacks and 100 is the goal line the home team attacks. Use this to plot both teams' drives on one field.
+    StartYardline
+
+    #(doc) Distance in yards from the start of the drive to the end zone the offense is attacking. 75 means the offense started on its own 25.
+    StartYardsToGoal
+
+    #(doc) Minutes left on the game clock in the starting quarter when the drive began.
+    `StartTime Minutes`
+
+    #(doc) Seconds left on the game clock in the starting quarter when the drive began, on top of the minutes.
+    `StartTime Seconds`
+
+    #(doc) Quarter the drive ended in: 1 through 4 for regulation, 5 and above for overtime periods.
+    EndPeriod
+
+    #(doc) Field stripe the drive ended on, in the same absolute field coordinates as the start: 0 is the goal line the away team attacks and 100 is the goal line the home team attacks. A small number of rows fall outside 0 to 100 in the raw feed.
+    EndYardline
+
+    #(doc) Distance in yards from the end of the drive to the end zone the offense was attacking. 0 means the drive reached the end zone.
+    EndYardsToGoal
+
+    #(doc) Minutes left on the game clock in the ending quarter when the drive finished.
+    `EndTime Minutes`
+
+    #(doc) Seconds left on the game clock in the ending quarter when the drive finished, on top of the minutes.
+    `EndTime Seconds`
+
+    #(doc) Minutes of game clock the drive consumed.
+    `Elapsed Minutes`
+
+    #(doc) Seconds of game clock the drive consumed, on top of the minutes.
+    `Elapsed Seconds`
+
+    #(doc) Number of plays run on the drive.
+    Plays
+
+    #(doc) Net yards the offense gained on the drive. Can be negative when sacks and penalties lose ground.
+    Yards
+
+    #(index)
+    #(doc) How the drive ended, in the feed's own words: TD, FG, PUNT, DOWNS, INT, FUMBLE, MISSED FG, SF for safety, END OF HALF, END OF GAME, and returned-for-touchdown variants such as INT TD or PUNT RETURN TD where the defense scored.
+    DriveResult
+
+    #(doc) True when the team with the ball on this drive is the home team.
+    IsHomeOffense
+
+    #(doc) Score of the team with the ball, as it stood when the drive began.
+    StartOffenseScore
+
+    #(doc) Score of the defending team, as it stood when the drive began.
+    StartDefenseScore
+
+    #(doc) Score of the team with the ball, as it stood when the drive ended.
+    EndOffenseScore
+
+    #(doc) Score of the defending team, as it stood when the drive ended.
+    EndDefenseScore
+}
+extend {
+
+  primary_key: Id
+
+  #(doc) Possession counts for this drive: how many are left in the game, how many the team with the ball has left, and how many are left in this half.
+  join_one: possessions is drive_possession_context on Id = possessions.drive_id
+
+  // ---- How the drive ended -----------------------------------------
+  dimension:
+
+    #|(doc)
+      True when this possession is an overtime two-point conversion attempt rather than a
+      drive. From the third overtime on, the rules stop giving each team a possession from
+      the opponent's 25 and give it a single snap from the 3 instead, alternating until one
+      team converts and the other does not.
+
+      The feed has no name for these. It files all nine of them under the literal result
+      string "Uncategorized", every one a single play that gains nothing — and that pair of
+      facts, inside overtime, identifies them exactly. Period alone will not do it: the
+      feed skips a period in Missouri-Auburn and labels an ordinary 7-play touchdown drive
+      as the seventh period.
+    |#
+    is_overtime_conversion is
+      StartPeriod >= 5 and DriveResult = 'Uncategorized' and Plays <= 1 and Yards = 0
+
+    #(doc) True when an overtime two-point conversion attempt was good. Read from the feed's Scoring flag, which tracks these correctly — it reproduces the 53-51 finish of the nine-period South Dakota game exactly.
+    is_overtime_conversion_made is is_overtime_conversion and Scoring
+
+    #(index)
+    #(doc) How the drive ended, grouped into readable categories: Touchdown, Field goal, Punt, Missed field goal, Interception, Fumble, Turnover on downs, Safety, Defensive touchdown when the defense returned it for a score, End of period, Two-point conversion made and Two-point conversion failed for the alternating attempts from the third overtime on, and Uncategorized.
+    // WHO SCORED comes from the score columns, not from DriveResult.
+    // The feed's result string says how a possession ENDED, not who put
+    // points on the board: 78 drives labelled plain 'TD' are ones where
+    // the DEFENSE scored — Indiana's blocked punt return in the national
+    // championship is one of them — and another 152 are labelled 'PUNT',
+    // 27 'INT', 23 'FUMBLE'. Checking the scoreboard first catches all
+    // 231 of them. See defensive_points_scored for the guardrails.
+    result_category is
+      // Ahead of the scoreboard checks on purpose. A conversion attempt is
+      // identified by the SHAPE of the play — one snap, no gain, in
+      // overtime — and that holds even where the overtime score columns
+      // do not, which in this feed is most of the time.
+      pick 'Two-point conversion made' when is_overtime_conversion and Scoring
+      pick 'Two-point conversion failed' when is_overtime_conversion
+      pick 'Defensive touchdown' when defensive_points_scored >= 6
+      pick 'Safety' when defensive_points_scored = 2
+      pick 'End of period' when DriveResult ? 'END OF HALF' | 'END OF GAME' | 'END OF 4TH QUARTER' | 'END OF HALF TD' | 'END OF GAME TD' | 'KICKOFF'
+      pick 'Touchdown' when DriveResult = 'TD'
+      pick 'Field goal' when DriveResult = 'FG'
+      pick 'Punt' when DriveResult = 'PUNT'
+      pick 'Missed field goal' when DriveResult = 'MISSED FG'
+      pick 'Interception' when DriveResult = 'INT'
+      pick 'Fumble' when DriveResult = 'FUMBLE'
+      pick 'Turnover on downs' when DriveResult = 'DOWNS'
+      pick 'Safety' when DriveResult = 'SF'
+      else 'Uncategorized'
+
+    #(doc) Short label for how the drive ended, for drive charts: TD, FG, P for punt, FGA for a missed field goal attempt, Int, Fum, Downs, S for safety, Def TD, Half when the first half ran out, Game End when the game ran out, 2PT for a converted overtime two-point attempt and Miss for one that failed, and Other.
+    result_abbreviation is
+      // Short on purpose. These land in adjacent columns 30px apart, so a
+      // label wider than its column collides with its neighbour.
+      pick '2PT' when result_category = 'Two-point conversion made'
+      pick 'Miss' when result_category = 'Two-point conversion failed'
+      pick 'Def TD' when result_category = 'Defensive touchdown'
+      // the clock running out on the game reads very differently from it
+      // running out on the first half, so name them apart
+      pick 'Game End' when result_category = 'End of period' and possessions.drives_left_in_game = 1
+      pick 'Half' when result_category = 'End of period'
+      pick 'TD' when result_category = 'Touchdown'
+      pick 'FG' when result_category = 'Field goal'
+      pick 'P' when result_category = 'Punt'
+      pick 'FGA' when result_category = 'Missed field goal'
+      pick 'Int' when result_category = 'Interception'
+      pick 'Fum' when result_category = 'Fumble'
+      pick 'Downs' when result_category = 'Turnover on downs'
+      pick 'S' when result_category = 'Safety'
+      else 'Other'
+
+    #(doc) True when the offense scored a touchdown on this drive. False when the result string says TD but the points went to the defense.
+    is_touchdown is result_category = 'Touchdown'
+
+    #(doc) True when the drive ended in a made field goal by the offense. False for a kick that was blocked and returned.
+    is_field_goal is result_category = 'Field goal'
+
+    #(doc) True when the drive ended in a punt.
+    is_punt is DriveResult = 'PUNT'
+
+    #(doc) True when the offense turned the ball over by interception or fumble.
+    is_turnover is DriveResult ? 'INT' | 'FUMBLE' | 'INT TD' | 'FUMBLE RETURN TD' | 'FUMBLE TD'
+
+    #(doc) True when the offense handed the ball over on downs.
+    is_turnover_on_downs is DriveResult ? 'DOWNS' | 'DOWNS TD'
+
+    #(doc) True when the drive ended in points for the offense, by touchdown or field goal.
+    is_offensive_score is result_category ? 'Touchdown' | 'Field goal'
+
+    #(doc) True when the drive gave up points to the defense, by return touchdown, blocked kick, or safety.
+    is_defensive_score is defensive_points_scored > 0
+
+    #(doc) True when the drive ran three plays or fewer and ended in a punt, the classic three-and-out.
+    is_three_and_out is Plays <= 3 and DriveResult = 'PUNT'
+
+    #(doc) True when the drive simply ran out of clock at the end of a half, a quarter, or the game.
+    is_clock_expiration is result_category = 'End of period'
+
+    #(doc) True when the drive gained 40 yards or more.
+    is_explosive_drive is Yards >= 40
+
+    #|(doc)
+      True when the drive was a quality possession in the Eckel-rate sense: it scored a
+      touchdown, or it reached the opponent's 35 having gained at least ten yards. Eckel rate
+      proper counts a first down inside the opponent's 40, which needs play-by-play; ending
+      at the 35 or closer after a ten-yard gain is the drive-level stand-in.
+    |#
+    is_eckel_drive is is_touchdown or (EndYardsToGoal <= 35 and Yards >= 10)
+
+  // ---- Scoring -----------------------------------------------------
+  dimension:
+
+    #|(doc)
+      Points the offense scored on this drive, taken from the score before and after so that
+      extra points and two-point conversions are counted. On the 0.8% of drives where the
+      feed's score columns skip an intervening score and produce a value no single possession
+      can produce (outside 0 to 8), it falls back to the drive's result: 7 for a touchdown,
+      3 for a made field goal, 0 otherwise. Without that repair those 325 rows contribute 6%
+      of the season's points and inflate every scoring rate.
+    |#
+    drive_points is
+      pick EndOffenseScore - StartOffenseScore
+        when EndOffenseScore - StartOffenseScore >= 0 and EndOffenseScore - StartOffenseScore <= 8
+      pick 7 when DriveResult = 'TD'
+      pick 3 when DriveResult = 'FG'
+      else 0
+
+    #(doc) True when the feed's own result string already says the defense scored, for example INT TD, PUNT RETURN TD, or SF.
+    is_named_defensive_score is
+      DriveResult ? 'INT TD' | 'FUMBLE RETURN TD' | 'FUMBLE TD' | 'PUNT TD' | 'PUNT RETURN TD'
+        | 'MISSED FG TD' | 'DOWNS TD' | 'END OF HALF TD' | 'END OF GAME TD' | 'SF'
+
+    #|(doc)
+      True when this drive's closing scoreboard matches the next drive's opening one, with the
+      two teams' columns swapped if possession changed hands. Roughly 7% of consecutive drives
+      disagree, which is the feed's score columns lagging a possession — so this is what
+      separates a real defensive score from a column that simply jumped.
+    |#
+    scoreboard_agrees_with_next_drive is
+      possessions.next_offense is null
+      or (possessions.next_offense != Offense
+          and EndOffenseScore = possessions.next_start_defense_score
+          and EndDefenseScore = possessions.next_start_offense_score)
+      or (possessions.next_offense = Offense
+          and EndOffenseScore = possessions.next_start_offense_score
+          and EndDefenseScore = possessions.next_start_defense_score)
+
+    #|(doc)
+      Points the defense scored on this possession, from return touchdowns, blocked kicks
+      returned, and safeties. Read from the scoreboard rather than the result string, which
+      says how a possession ended and not who scored.
+
+      Two guardrails, both earned the hard way. A defense cannot score 3, so only a move of
+      6 to 8 counts as a return touchdown and only 2 as a safety. And a scoreboard move the
+      feed does not corroborate is not believed: of the 231 drives where the defensive column
+      jumps by a touchdown without the result string saying so, only 122 line up with the next
+      drive's opening score — the rest are the columns lagging, and counting them would invent
+      about a hundred defensive touchdowns.
+    |#
+    defensive_points_scored is
+      pick EndDefenseScore - StartDefenseScore
+        when ((EndDefenseScore - StartDefenseScore >= 6 and EndDefenseScore - StartDefenseScore <= 8)
+              or EndDefenseScore - StartDefenseScore = 2)
+         and (is_named_defensive_score or scoreboard_agrees_with_next_drive)
+      pick 2 when DriveResult = 'SF'
+      pick 7 when is_named_defensive_score
+      else 0
+
+    #(doc) Kept as an alias of the points the defense scored on this possession.
+    defense_points_allowed is defensive_points_scored
+
+    #(doc) How the defense scored, when it did: Punt return or block, Interception return, Fumble return, Blocked kick return, Safety, or Return touchdown when the feed does not say. Empty when the defense did not score.
+    defensive_score_type is
+      pick null when defensive_points_scored = 0
+      pick 'Safety' when defensive_points_scored = 2
+      pick 'Punt return or block' when DriveResult ? 'PUNT' | 'PUNT TD' | 'PUNT RETURN TD'
+      pick 'Interception return' when DriveResult ? 'INT' | 'INT TD'
+      pick 'Fumble return' when DriveResult ? 'FUMBLE' | 'FUMBLE TD' | 'FUMBLE RETURN TD'
+      pick 'Blocked kick return' when DriveResult ? 'FG' | 'MISSED FG' | 'MISSED FG TD'
+      else 'Return touchdown'
+
+    #(doc) Home team's score once the drive was over, with the feed's scoreboard spikes repaired and the running total held non-decreasing.
+    home_score_after is
+      greatest(
+        possessions.despiked_home_score,
+        possessions.prev_despiked_home_score ?? possessions.despiked_home_score
+      )
+
+    #(doc) Away team's score once the drive was over, with the feed's scoreboard spikes repaired and the running total held non-decreasing.
+    away_score_after is
+      greatest(
+        possessions.despiked_away_score,
+        possessions.prev_despiked_away_score ?? possessions.despiked_away_score
+      )
+
+  // ---- Field position and clock ------------------------------------
+  dimension:
+
+    #(doc) Yards from the offense's own goal line where the drive started. 25 means the drive started on the offense's own 25.
+    start_field_position is 100 - StartYardsToGoal
+
+    #(doc) Yards from the offense's own goal line where the drive ended.
+    end_field_position is 100 - EndYardsToGoal
+
+    #(doc) Net yards of field position the drive gained, measured from where it started to where it ended.
+    field_position_gained is StartYardsToGoal - EndYardsToGoal
+
+    #(doc) Starting field position rounded into five-yard bands and labelled with the middle of the band, so 27.5 covers drives starting between the offense's own 25 and its own 29. Use it to plot field position against scoring without the noise of single-yard buckets.
+    start_field_position_band is floor((100 - StartYardsToGoal) / 5) * 5 + 2.5
+
+    #(doc) Where the drive started, in bands: Deep in own territory inside the own 10, Own territory to the own 39, Midfield from the own 40 to the opponent 40, and Plus territory inside the opponent 40.
+    start_field_position_zone is
+      pick 'Deep in own territory' when StartYardsToGoal >= 91
+      pick 'Own territory' when StartYardsToGoal >= 61
+      pick 'Midfield' when StartYardsToGoal >= 40
+      else 'Plus territory'
+
+    #(doc) True when the drive reached the opponent's 20-yard line or closer.
+    reached_red_zone is EndYardsToGoal <= 20
+
+    #(doc) Quarter the drive started in, written out: 1st, 2nd, 3rd, 4th, or OT for any overtime period.
+    quarter_label is
+      pick '1st' when StartPeriod = 1
+      pick '2nd' when StartPeriod = 2
+      pick '3rd' when StartPeriod = 3
+      pick '4th' when StartPeriod = 4
+      pick 'OT' when StartPeriod >= 5
+      else 'Unknown'
+
+    #(doc) Half the drive started in: 1st half, 2nd half, or Overtime.
+    half_label is
+      pick '1st half' when StartPeriod <= 2
+      pick '2nd half' when StartPeriod = 3 or StartPeriod = 4
+      pick 'Overtime' when StartPeriod >= 5
+      else 'Unknown'
+
+    #(doc) Seconds of game clock the drive consumed, its time of possession.
+    time_of_possession_seconds is `Elapsed Minutes` * 60 + `Elapsed Seconds`
+
+    #(doc) Seconds left in the quarter when the drive began.
+    clock_seconds_at_start is `StartTime Minutes` * 60 + `StartTime Seconds`
+
+    #(doc) Yards gained per play on the drive.
+    yards_per_play_on_drive is Yards / nullif(Plays, 0)
+
+  // ---- Field goal attempts -----------------------------------------
+  //  The feed has no kick distance, but a drive that ends in a field
+  //  goal ends where the ball was snapped from, so the attempt is
+  //  EndYardsToGoal + 17 (10 yards of end zone + a 7-yard hold).
+  dimension:
+
+    #(doc) True when the drive ended with a field goal attempt, made or missed.
+    is_field_goal_attempt is DriveResult ? 'FG' | 'MISSED FG' | 'MISSED FG TD'
+
+    #(doc) Length of the field goal attempt in yards, counted from the holder's spot through the back of the end zone: the ball's distance to the goal line plus 17. Empty on drives that did not end in a kick.
+    field_goal_distance is
+      pick EndYardsToGoal + 17 when is_field_goal_attempt
+      else null
+
+    #(doc) Field goal distance rounded into five-yard bands and labelled with the middle of the band, so 42.5 covers attempts from 40 to 44 yards. Use it when comparing kicking curves for groups smaller than the whole league, where single-yard buckets are too thin.
+    field_goal_distance_band is
+      pick floor((EndYardsToGoal + 17) / 5) * 5 + 2.5 when is_field_goal_attempt
+      else null
+
+    #(doc) Range band of the field goal attempt: Chip shot under 30 yards, Short 30 to 39, Medium 40 to 49, Long 50 to 59, and Very long at 60 or more.
+    field_goal_range is
+      pick null when not is_field_goal_attempt
+      pick 'Chip shot' when EndYardsToGoal + 17 < 30
+      pick 'Short' when EndYardsToGoal + 17 < 40
+      pick 'Medium' when EndYardsToGoal + 17 < 50
+      pick 'Long' when EndYardsToGoal + 17 < 60
+      else 'Very long'
+
+  // ---- Chart-ready geometry ----------------------------------------
+  //  Absolute field coordinates, cleaned so a drive chart can be drawn
+  //  directly from them: both teams plot on one 0-100 axis, 0 is the
+  //  goal line the away team attacks and 100 the goal line the home
+  //  team attacks.
+  dimension:
+
+    #(doc) Field stripe the drive started on for charting, in absolute field coordinates from 0 to 100, clamped into the field of play.
+    chart_start_yardline is least(greatest(StartYardline, 0), 100)
+
+    #(doc) Field stripe the drive ended on for charting, in absolute field coordinates from 0 to 100. Touchdown drives are drawn all the way to the goal line the offense was attacking, and stray values from the raw feed are clamped into the field of play.
+    chart_end_yardline is
+      pick 100 when is_touchdown and IsHomeOffense
+      pick 0 when is_touchdown and not IsHomeOffense
+      else least(greatest(EndYardline, 0), 100)
+
+    #(doc) Direction the offense was moving on the field chart: up toward 100 for the home team, down toward 0 for the away team.
+    chart_direction is
+      pick 'up' when IsHomeOffense
+      else 'down'
+
+  // ---- Garbage time --------------------------------------------------
+  //  BCFtoys' garbage-possession rules, implemented as stated at
+  //  https://bcftoys.com/whiteboard/. The idea: a possession is garbage
+  //  when neither team is still playing to win it — the clock is being
+  //  run out, or the score is already out of reach.
+  //
+  //  A note on "runs out the clock": the feed's EndTime column is 0:00
+  //  on only ~64% of the drives it labels END OF HALF or END OF GAME, so
+  //  it cannot carry these rules. What identifies a clock-killing
+  //  possession reliably is the pair of facts BCFtoys itself names —
+  //  it is the LAST possession of the half or game, and it produced no
+  //  turnover, no score, and no field goal attempt. That is what
+  //  clock_ran_out tests, and it correctly picks up the 198 end-of-game
+  //  kneel-downs the feed leaves as "Uncategorized".
+  dimension:
+
+    #(doc) Score margin from the point of view of the team with the ball, as it stood when the drive began. Positive means the offense was ahead.
+    margin_at_drive_start is StartOffenseScore - StartDefenseScore
+
+    #(doc) Points the trailing team was behind by when the drive began. Zero when the game was tied.
+    deficit_at_drive_start is abs(StartOffenseScore - StartDefenseScore)
+
+    #(doc) Number of possessions the team with the ball has left in the game, counting this one.
+    offense_possessions_left is possessions.offense_possessions_left
+
+    #(doc) Number of possessions the defending team has left in the game after this one.
+    defense_possessions_left is possessions.drives_left_in_game - possessions.offense_possessions_left
+
+    #(doc) Number of possessions the trailing team has left to erase the deficit. Empty when the game is tied.
+    losing_team_possessions_left is
+      pick possessions.offense_possessions_left when margin_at_drive_start < 0
+      pick possessions.drives_left_in_game - possessions.offense_possessions_left when margin_at_drive_start > 0
+      else null
+
+    #(doc) True when this is the last possession of the game.
+    ends_game is possessions.drives_left_in_game = 1
+
+    #(doc) True when this is the last possession of the first half.
+    ends_first_half is possessions.period_group = 1 and possessions.drives_left_in_period_group = 1
+
+    #(doc) True when this is the last possession of regulation, the end of the second half.
+    ends_regulation is possessions.period_group = 2 and possessions.drives_left_in_period_group = 1
+
+    #(doc) True when the possession simply ran out of clock: no turnover, no points for either team, and no field goal attempt.
+    clock_ran_out is
+      not is_turnover
+      and not is_turnover_on_downs
+      and not is_field_goal_attempt
+      and EndOffenseScore = StartOffenseScore
+      and EndDefenseScore = StartDefenseScore
+
+    #(doc) Garbage rule one: a possession of two plays or fewer that runs out the clock to end the first half, or to end regulation with the score tied, without a turnover, a score, or a field goal attempt.
+    is_garbage_end_of_half is
+      Plays <= 2 and clock_ran_out
+      and (ends_first_half or (ends_regulation and margin_at_drive_start = 0))
+
+    #(doc) Garbage rule two: a second-half possession where the game is already out of reach, because eight points times the trailing team's remaining possessions, plus one, is still less than the deficit.
+    is_garbage_out_of_reach is
+      StartPeriod >= 3
+      and margin_at_drive_start != 0
+      and 8 * losing_team_possessions_left + 1 < deficit_at_drive_start
+
+    #(doc) Garbage rule three: a possession of two plays or fewer by a team trailing by more than eight that runs out the clock to end the game.
+    is_garbage_trailing_kneel is
+      Plays <= 2 and ends_game and clock_ran_out and margin_at_drive_start < -8
+
+    #(doc) Garbage rule four: the victory formation. A possession by the team ahead by eight points or fewer that runs out the clock to end the game.
+    is_garbage_victory_formation is
+      ends_game and clock_ran_out
+      and margin_at_drive_start > 0 and margin_at_drive_start <= 8
+
+    #|(doc)
+      True when the possession is garbage time — neither team is still playing to win it.
+      Covers all four of BCFtoys' rules: a kneel-down to end the first half or a tied
+      regulation, a second-half possession with the game already out of reach, a kneel-down
+      by a team trailing by more than eight, and the winning team's victory formation.
+      About 16% of the season's drives, and half of all fourth-quarter possessions.
+    |#
+    is_garbage_possession is
+      (is_garbage_end_of_half
+        or is_garbage_out_of_reach
+        or is_garbage_trailing_kneel
+        or is_garbage_victory_formation) ?? false
+
+    #(index)
+    #(doc) Why the possession counts as garbage time: End of half kneel-down, Victory formation, Trailing kneel-down, or Out of reach. Competitive for everything else.
+    // Named rules first, then the catch-all: most end-of-game kneel-downs
+    // also satisfy the out-of-reach rule, and calling one a kneel-down
+    // says more than calling it out of reach.
+    garbage_reason is
+      pick 'End of half kneel-down' when is_garbage_end_of_half
+      pick 'Victory formation' when is_garbage_victory_formation
+      pick 'Trailing kneel-down' when is_garbage_trailing_kneel
+      pick 'Out of reach' when is_garbage_out_of_reach
+      else 'Competitive'
+
+  // ---- Measures ----------------------------------------------------
+  measure:
+
+    #(doc) Number of drives.
+    drive_count is count()
+
+    #(doc) Number of games the drives come from.
+    game_count is count(GameId)
+
+    #(doc) Total plays run.
+    play_count is sum(Plays)
+
+    #(doc) Total net yards gained.
+    total_yards is sum(Yards)
+
+    #(doc) Total points scored by the offense on these drives.
+    total_points is sum(drive_points)
+
+    #(doc) Average points the offense scores per drive, the standard measure of drive efficiency.
+    points_per_drive is sum(drive_points) / nullif(count(), 0)
+
+    #(doc) Average net yards gained per drive.
+    yards_per_drive is sum(Yards) / nullif(count(), 0)
+
+    #(doc) Average number of plays per drive.
+    plays_per_drive is sum(Plays) / nullif(count(), 0)
+
+    #(doc) Average yards gained per play.
+    yards_per_play is sum(Yards) / nullif(sum(Plays), 0)
+
+    #(doc) Share of drives that ended in points for either team.
+    # percent
+    scoring_drive_rate is count() { where: Scoring } / nullif(count(), 0)
+
+    #(doc) Share of drives that ended in a touchdown by the offense.
+    # percent
+    touchdown_rate is count() { where: is_touchdown } / nullif(count(), 0)
+
+    #(doc) Share of drives that ended in a made field goal.
+    # percent
+    field_goal_rate is count() { where: is_field_goal } / nullif(count(), 0)
+
+    #(doc) Share of drives that ended in a punt.
+    # percent
+    punt_rate is count() { where: is_punt } / nullif(count(), 0)
+
+    #(doc) Share of drives that ended in an interception or a lost fumble.
+    # percent
+    turnover_rate is count() { where: is_turnover } / nullif(count(), 0)
+
+    #(doc) Share of drives that ended with three plays or fewer and a punt.
+    # percent
+    three_and_out_rate is count() { where: is_three_and_out } / nullif(count(), 0)
+
+    #(doc) Share of drives that reached the opponent's 20-yard line or closer.
+    # percent
+    red_zone_rate is count() { where: reached_red_zone } / nullif(count(), 0)
+
+    #(doc) Share of drives that gained 40 yards or more.
+    # percent
+    explosive_drive_rate is count() { where: is_explosive_drive } / nullif(count(), 0)
+
+    #(doc) Eckel rate: share of drives that were quality possessions — a touchdown, or reaching the opponent's 35 after gaining at least ten yards. Measures how often an offense puts itself in position to score, separately from whether the kicker or the red zone finishes it. About 48% for Power Four offenses in 2025.
+    # percent
+    eckel_rate is count() { where: is_eckel_drive } / nullif(count(), 0)
+
+    #(doc) Number of drives that ended in a touchdown.
+    touchdown_count is count() { where: is_touchdown }
+
+    #(doc) Number of drives that ended in a giveaway by interception or fumble.
+    turnover_count is count() { where: is_turnover }
+
+    #(doc) Number of times the defense scored on a drive, by return touchdown or safety.
+    defensive_score_count is count() { where: is_defensive_score }
+
+    #(doc) Average distance to the end zone at the start of a drive. Lower is better field position.
+    avg_start_yards_to_goal is avg(StartYardsToGoal)
+
+    #(doc) Average yard line a drive starts on, measured from the offense's own goal line. Higher is better field position.
+    avg_start_field_position is avg(start_field_position)
+
+    #(doc) Total time of possession across these drives, in minutes.
+    time_of_possession_minutes is sum(time_of_possession_seconds) / 60
+
+    #(doc) Average length of a drive in seconds of game clock.
+    avg_drive_seconds is avg(time_of_possession_seconds)
+
+    #(doc) Longest drive by yards gained.
+    longest_drive_yards is max(Yards)
+
+    #(doc) Number of garbage-time possessions, where neither team is still playing to win.
+    garbage_drive_count is count() { where: is_garbage_possession }
+
+    #(doc) Share of possessions that are garbage time.
+    # percent
+    garbage_drive_rate is count() { where: is_garbage_possession } / nullif(count(), 0)
+
+    #(doc) Number of possessions that were still competitive.
+    competitive_drive_count is count() { where: not is_garbage_possession }
+
+    #(doc) Average points scored per possession, counting only competitive possessions. The scoring rate with garbage time thrown out.
+    competitive_points_per_drive is
+      sum(drive_points) { where: not is_garbage_possession }
+      / nullif(count() { where: not is_garbage_possession }, 0)
+
+    #(doc) Number of field goal attempts, made and missed.
+    field_goal_attempts is count() { where: is_field_goal_attempt }
+
+    #(doc) Share of field goal attempts that were made.
+    # percent
+    field_goal_make_rate is count() { where: is_field_goal } / nullif(count() { where: is_field_goal_attempt }, 0)
+
+    #(doc) Number of field goal attempts that were made.
+    field_goal_makes is count() { where: is_field_goal }
+
+    #(doc) Average points scored per field goal attempt: three points for a make, none for a miss, so it is the make rate times three. This is the expected value of taking the kick. Counted from the result of the kick rather than the score columns, which are out of sync on about 2% of kicking drives.
+    expected_points_per_fg_attempt is 3.0 * count() { where: is_field_goal } / nullif(count() { where: is_field_goal_attempt }, 0)
+
+    #(doc) Average length of a field goal attempt in yards.
+    avg_field_goal_distance is avg(field_goal_distance)
+
+  // ---- Views -------------------------------------------------------
+
+  #(doc) Offensive drive efficiency by team, ranked by points per drive. The core offensive leaderboard.
+  view: offense_leaderboard is {
+    group_by: team is Offense
+    aggregate: drive_count, points_per_drive, yards_per_drive, touchdown_rate, three_and_out_rate, turnover_rate, avg_start_field_position
+    having: drive_count > 100
+    order_by: points_per_drive desc
+  }
+
+  #(doc) Defensive drive efficiency by team, ranked by fewest points allowed per drive. The core defensive leaderboard.
+  view: defense_leaderboard is {
+    group_by: team is Defense
+    aggregate: drive_count, points_per_drive, yards_per_drive, touchdown_rate, three_and_out_rate, turnover_rate
+    having: drive_count > 100
+    order_by: points_per_drive asc
+  }
+
+  #(doc) How drives end across the season, most common outcome first.
+  view: by_result is {
+    group_by: result_category
+    aggregate: drive_count, yards_per_drive, plays_per_drive, avg_drive_seconds
+    order_by: drive_count desc
+  }
+
+  #(doc) Drive efficiency by quarter, showing how offenses change through a game.
+  view: by_quarter is {
+    group_by: quarter_label
+    aggregate: drive_count, points_per_drive, yards_per_drive, three_and_out_rate, scoring_drive_rate
+    order_by: quarter_label
+  }
+
+  #(doc) How much starting field position is worth: drive efficiency by where the drive began.
+  view: by_start_field_position is {
+    group_by: start_field_position_zone
+    aggregate: drive_count, points_per_drive, touchdown_rate, punt_rate, yards_per_drive
+    order_by: drive_count desc
+  }
+
+  #(doc) Offensive drive efficiency by conference, best scoring conference first.
+  view: by_conference is {
+    where: OffenseConference is not null
+    group_by: conference is OffenseConference
+    aggregate: drive_count, points_per_drive, yards_per_drive, touchdown_rate, turnover_rate
+    order_by: points_per_drive desc
+  }
+
+  #(doc) Every drive of a game in order, with field position, result and the score afterwards. The drive-by-drive game log.
+  view: drive_log is {
+    group_by:
+      DriveNumber
+      Offense
+      quarter_label
+      start_field_position
+      Plays
+      Yards
+      result_category
+      home_score_after
+      away_score_after
+    order_by: DriveNumber
+  }
+
+  #(doc) The longest scoring drives of the season, by yards gained.
+  view: longest_scoring_drives is {
+    where: is_offensive_score
+    group_by: Offense, Defense, Yards, Plays, result_category
+    order_by: Yards desc
+    limit: 25
+  }
+
+  #|(doc)
+    Expected points of a field goal attempt by kick distance: for every attempt length,
+    how many points the attempt is worth on average (three times the make rate). The
+    scoring curve kickers are judged against, and the input to any go-for-it decision.
+  |#
+  view: field_goal_expected_points is {
+    // 70 yards is past the longest kick anyone attempts; longer values
+    // are the handful of bad end-of-drive spots in the raw feed
+    where: is_field_goal_attempt and field_goal_distance >= 17 and field_goal_distance <= 70
+    group_by: field_goal_distance
+    aggregate:
+      field_goal_attempts
+      field_goal_makes
+      expected_points_per_fg_attempt
+      field_goal_make_rate
+    order_by: field_goal_distance
+  }
+
+  #|(doc)
+    What a yard of field position is worth: average points scored per drive by the yard
+    line the drive started on, measured from the offense's own goal line. Rises steadily
+    from about 1.2 points starting on your own 1 to about 4 points starting inside the
+    opponent's 35.
+  |#
+  view: points_by_start_yardline is {
+    group_by: start_field_position
+    aggregate: drive_count, points_per_drive, touchdown_rate
+    order_by: start_field_position
+  }
+
+  #(doc) How much of the season is garbage time, broken out by the rule that classified each possession, and how differently those possessions play.
+  view: garbage_time_breakdown is {
+    group_by: garbage_reason
+    aggregate: drive_count, points_per_drive, yards_per_drive, plays_per_drive
+    order_by: drive_count desc
+  }
+
+  #(doc) Garbage time by quarter — where in a game the possessions that no longer matter actually happen.
+  view: garbage_time_by_quarter is {
+    group_by: quarter_label
+    aggregate: drive_count, garbage_drive_count, garbage_drive_rate
+    order_by: quarter_label
+  }
+
+  #(doc) Teams whose drives most often end in a three-and-out punt, worst offenses first.
+  view: worst_three_and_out_offenses is {
+    group_by: team is Offense
+    aggregate: drive_count, three_and_out_rate, points_per_drive
+    having: drive_count > 100
+    order_by: three_and_out_rate desc
+    limit: 25
+  }
+}

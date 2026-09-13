@@ -1,0 +1,76 @@
+// =====================================================================
+//  RAW — the CFBD game and drive feeds, both seasons, straight from
+//  Hugging Face (huggingface.co/datasets/24601p/cfb-data).
+//
+//  Read over https rather than from a local copy, so the published site
+//  picks up each pipeline upload (cfbd_pipeline.py --upload) without a
+//  rebuild: the 2026 files grow every week of the season.
+//
+//  Every season lives in its own file with an identical schema;
+//  read_parquet's list form stacks them. Add a season by adding a URL.
+//  Game ids and drive ids are unique across seasons (checked: no overlap
+//  between 2025 and 2026), so the window functions downstream, which
+//  partition by GameId, never mix two seasons.
+// =====================================================================
+
+#(doc) Every game of every season in the feed, one row per game, exactly as CFBD publishes it.
+source: games_raw is duckdb.sql("""
+  SELECT * FROM read_parquet([
+    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet',
+    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'
+  ], union_by_name = true)
+""")
+
+#(doc) Every drive of every season in the feed, one row per possession, exactly as CFBD publishes it.
+source: drives_raw is duckdb.sql("""
+  SELECT * FROM read_parquet([
+    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet',
+    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'
+  ], union_by_name = true)
+""")
+
+// ---------------------------------------------------------------------
+//  TEAM-GAMES — each game twice, once from each team's side.
+//
+//  A ranking is asked per team, but a game row names two teams in two
+//  differently named columns. Unpivoting here gives one row per team per
+//  game, so "points allowed" is just points_against and a team's record
+//  is a count over its own rows — no pick-the-right-column logic in every
+//  measure. Malloy has no UNION, which is why this one lives in SQL.
+// ---------------------------------------------------------------------
+
+#(doc) One row per team per game: every game appears twice, once from the home team's side and once from the away team's.
+source: team_games_raw is duckdb.sql("""
+  WITH g AS (
+    SELECT * FROM read_parquet([
+      'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet',
+      'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'
+    ], union_by_name = true)
+  ),
+  sides AS (
+    SELECT Id AS game_id, Season AS season, "Week" AS week_number, SeasonType AS season_type,
+      StartDate AS start_date, Completed AS completed, ConferenceGame AS conference_game,
+      TRUE AS is_home, HomeTeam AS team, HomeConference AS conference, HomeClassification AS classification,
+      AwayTeam AS opponent, AwayConference AS opponent_conference, AwayClassification AS opponent_classification,
+      HomePoints AS points_for, AwayPoints AS points_against,
+      HomePregameElo AS pregame_elo, HomePostgameElo AS postgame_elo, AwayPregameElo AS opponent_pregame_elo
+    FROM g
+    UNION ALL
+    SELECT Id, Season, "Week", SeasonType,
+      StartDate, Completed, ConferenceGame,
+      FALSE, AwayTeam, AwayConference, AwayClassification,
+      HomeTeam, HomeConference, HomeClassification,
+      AwayPoints, HomePoints,
+      AwayPregameElo, AwayPostgameElo, HomePregameElo
+    FROM g
+  )
+  SELECT *,
+    CAST(game_id AS VARCHAR) || '|' || team AS team_game_id,
+    -- the team's most recent game that carries a postgame Elo, so a
+    -- ranking can show where the rating stands now
+    postgame_elo IS NOT NULL
+      AND row_number() OVER (
+        PARTITION BY team, season, postgame_elo IS NULL ORDER BY start_date DESC
+      ) = 1 AS is_latest_rated_game
+  FROM sides
+""")

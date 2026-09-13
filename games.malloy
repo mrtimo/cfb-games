@@ -1,0 +1,529 @@
+##! experimental.access_modifiers
+
+import "raw.malloy"
+
+// =====================================================================
+//  GAMES — one row per college football game, 2025 and 2026 seasons
+//
+//  Source: games_raw (raw.malloy), the CollegeFootballData (CFBD) /games
+//  feed read from huggingface.co/datasets/24601p/cfb-data, one parquet
+//  file per season.
+//
+//  GRAIN: one row per game. `Id` is unique across both seasons.
+//  COVERAGE: 2025 is complete (3,831 games, August 2025 through the
+//  January 2026 championship). 2026 carries the whole schedule, with
+//  scores filling in as games are played. All divisions (fbs, fcs, ii,
+//  iii); drive detail exists only for Division I games.
+//
+//  This file is adapted from ../games.malloy, the 2025-only model. The
+//  additions are the season and week labels and the thrill index.
+//
+//  TIME ZONE: the feed publishes kickoff in UTC; StartDate was written to
+//  parquet as a naive US/Pacific local timestamp, so a late Saturday-night
+//  Eastern kickoff still lands on the Saturday calendar date.
+// =====================================================================
+
+#|(doc)
+  One row per college football game in the 2025 and 2026 seasons, across every division: FBS, FCS, Division II
+  and Division III. Each game carries the final score, venue and announced attendance,
+  the conference and division of both teams, pregame and postgame Elo ratings, postgame
+  win probability, an excitement rating, and College Football Playoff bracket details
+  for playoff games. Use it for schedules, results, margins, attendance, rankings-style
+  Elo movement, and as the game-level context for drive-by-drive data, which joins on
+  game id.
+|#
+source: games_base is games_raw
+include {
+  public:
+
+    #(doc) Unique identifier for the game. Join key to the drives data, whose GameId column holds the same value.
+    Id
+
+    #(doc) Season year the game belongs to: 2025 or 2026. A season's bowls and playoff games played in January still belong to the season that started in August.
+    Season
+
+    #(doc) Week of the season the game was played in, numbered within the season type. Regular-season weeks run 1 to 16; postseason bowl and playoff games carry their own week numbers.
+    `Week`
+
+    #(index)
+    #(doc) Portion of the season: regular for the regular season, postseason for bowls and College Football Playoff games.
+    SeasonType
+
+    #(doc) Scheduled kickoff date and time, expressed in US Pacific local time.
+    StartDate
+
+    #(doc) True when the kickoff time had not been announced yet, so only the date is meaningful.
+    StartTimeTBD
+
+    #(doc) True when the game has been played and the final score is official.
+    Completed
+
+    #(doc) True when the game was played at a neutral venue rather than either team's own stadium. Bowl games, playoff games and kickoff classics are typically neutral site.
+    NeutralSite
+
+    #(doc) True when both teams belong to the same conference, so the result counts in the conference standings.
+    ConferenceGame
+
+    #(doc) Announced attendance for the game, in people. Missing for many games, especially at the Division II and Division III level.
+    Attendance
+
+    #(doc) Unique identifier of the stadium the game was played in.
+    VenueId
+
+    #(index)
+    #(doc) Name of the stadium the game was played in, for example Bryant-Denny Stadium.
+    Venue
+
+    #(doc) Unique identifier of the home team.
+    HomeId
+
+    #(index)
+    #(doc) Name of the home team, for example Alabama or Ohio State.
+    HomeTeam
+
+    #(index)
+    #(doc) Division the home team competes in: fbs, fcs, ii for Division II, or iii for Division III.
+    HomeClassification
+
+    #(index)
+    #(doc) Conference the home team belongs to, for example SEC, Big Ten, ACC or Big 12. Missing for independents and some non-Division-I programs.
+    HomeConference
+
+    #(doc) Final points scored by the home team. Missing until the game has been played.
+    HomePoints
+
+    #(doc) Points the home team scored in each period, as a comma-separated list in order, for example 7,10,0,14 for the four quarters.
+    HomeLineScores
+
+    #(doc) Postgame win expectancy for the home team: how likely it was to win given how the game was played, from 0 to 1. It pairs with the away value to sum to 1 and is not the result itself — a team can lose a game it was 90% likely to win. Matches the actual winner in about 90% of games.
+    HomePostgameWinProbability
+
+    #(doc) Home team's Elo power rating going into the game. Higher is stronger; roughly 1500 is average.
+    HomePregameElo
+
+    #(doc) Home team's Elo power rating after the game, reflecting the result. Higher is stronger.
+    HomePostgameElo
+
+    #(doc) Unique identifier of the away team.
+    AwayId
+
+    #(index)
+    #(doc) Name of the away team, for example Michigan or Texas.
+    AwayTeam
+
+    #(index)
+    #(doc) Division the away team competes in: fbs, fcs, ii for Division II, or iii for Division III.
+    AwayClassification
+
+    #(index)
+    #(doc) Conference the away team belongs to, for example SEC, Big Ten, ACC or Big 12. Missing for independents and some non-Division-I programs.
+    AwayConference
+
+    #(doc) Final points scored by the away team. Missing until the game has been played.
+    AwayPoints
+
+    #(doc) Points the away team scored in each period, as a comma-separated list in order, for example 3,7,7,0 for the four quarters.
+    AwayLineScores
+
+    #(doc) Postgame win expectancy for the away team: how likely it was to win given how the game was played, from 0 to 1. It pairs with the home value to sum to 1 and is not the result itself.
+    AwayPostgameWinProbability
+
+    #(doc) Away team's Elo power rating going into the game. Higher is stronger; roughly 1500 is average.
+    AwayPregameElo
+
+    #(doc) Away team's Elo power rating after the game, reflecting the result. Higher is stronger.
+    AwayPostgameElo
+
+    #(doc) Excitement rating for the game, built from how much and how often the win probability swung. Typical games rate near 4; the wildest finishes rate above 8.
+    ExcitementIndex
+
+    #(doc) Link to the game's video highlights, when one is published.
+    Highlights
+
+    #(doc) Free-text note about the game, usually the name of a kickoff event or a special circumstance, for example Aer Lingus College Football Classic.
+    Notes
+
+    #(index)
+    #(doc) Postseason competition the game belongs to. cfp for the College Football Playoff; missing for regular-season and ordinary bowl games.
+    `Playoff Competition`
+
+    #(doc) Playoff bracket format in force for the season, for example twelve_team_2025.
+    `Playoff Format`
+
+    #(index)
+    #(doc) Playoff round in machine form: first_round, quarterfinal, semifinal or championship.
+    `Playoff Round`
+
+    #(index)
+    #(doc) Playoff round in readable form: First Round, Quarterfinal, Semifinal or National Championship.
+    `Playoff RoundName`
+
+    #(doc) Slot the game occupies in the playoff bracket, for example QF1 for the first quarterfinal or CH for the championship.
+    `Playoff BracketSlot`
+
+    #(doc) Playoff seed of the home team, 1 through 12. Missing outside the playoff.
+    `Playoff HomeSeed`
+
+    #(doc) Playoff seed of the away team, 1 through 12. Missing outside the playoff.
+    `Playoff AwaySeed`
+
+    #(index)
+    #(doc) Bowl the playoff game was hosted by, for example Rose Bowl, Sugar Bowl or College Football Playoff National Championship.
+    `Playoff BowlName`
+}
+extend {
+
+  primary_key: Id
+
+  // ---- Derived game attributes -------------------------------------
+  dimension:
+
+    #(doc) Calendar date the game kicked off, in US Pacific local time.
+    game_date is StartDate::date
+
+    #(doc) Matchup in away-at-home form, for example Michigan at Ohio State.
+    matchup is concat(AwayTeam, ' at ', HomeTeam)
+
+    #(doc) Final score written out, for example Ohio State 30, Michigan 24, with the winner first. Empty until the game is played.
+    final_score is
+      pick concat(HomeTeam, ' ', HomePoints::string, ', ', AwayTeam, ' ', AwayPoints::string) when HomePoints >= AwayPoints
+      else concat(AwayTeam, ' ', AwayPoints::string, ', ', HomeTeam, ' ', HomePoints::string)
+
+    #(doc) Team that won the game. Empty for ties and for games that have not been played.
+    winner is
+      pick HomeTeam when HomePoints > AwayPoints
+      pick AwayTeam when AwayPoints > HomePoints
+      else null
+
+    #(doc) Team that lost the game. Empty for ties and for games that have not been played.
+    loser is
+      pick AwayTeam when HomePoints > AwayPoints
+      pick HomeTeam when AwayPoints > HomePoints
+      else null
+
+    #(doc) True when the home team won.
+    home_win is HomePoints > AwayPoints
+
+    #(doc) Combined points scored by both teams.
+    total_points is HomePoints + AwayPoints
+
+    #(doc) Home points minus away points. Positive when the home team won, negative when the away team won.
+    point_margin is HomePoints - AwayPoints
+
+    #(doc) Winning margin in points, regardless of which team won.
+    victory_margin is abs(HomePoints - AwayPoints)
+
+    #(doc) How close the game was: One-score game for a margin of 8 or less, Two-score game for 9 to 16, Comfortable for 17 to 27, and Blowout for 28 or more.
+    margin_bucket is
+      pick 'One-score game' when abs(HomePoints - AwayPoints) <= 8
+      pick 'Two-score game' when abs(HomePoints - AwayPoints) <= 16
+      pick 'Comfortable' when abs(HomePoints - AwayPoints) <= 27
+      else 'Blowout'
+
+    #(doc) Division matchup, for example fbs vs fbs or fbs vs fcs, using the two teams' divisions.
+    classification_matchup is concat(HomeClassification, ' vs ', AwayClassification)
+
+    #(doc) True when both teams are FBS programs, the top division of college football.
+    is_fbs_matchup is HomeClassification = 'fbs' and AwayClassification = 'fbs'
+
+    #(doc) True when the game is part of the College Football Playoff bracket.
+    is_playoff_game is `Playoff Competition` is not null
+
+    #(doc) Home team's Elo rating minus the away team's Elo rating before kickoff. Positive means the home team was the stronger team on paper.
+    pregame_elo_edge is HomePregameElo - AwayPregameElo
+
+    #(doc) Team the pregame Elo ratings favored, before any home-field adjustment.
+    elo_favorite is
+      pick HomeTeam when HomePregameElo > AwayPregameElo
+      pick AwayTeam when AwayPregameElo > HomePregameElo
+      else null
+
+    #(doc) True when the team with the lower pregame Elo rating won the game.
+    is_elo_upset is
+      (HomePoints > AwayPoints and HomePregameElo < AwayPregameElo)
+      or (AwayPoints > HomePoints and AwayPregameElo < HomePregameElo)
+
+    #(doc) Points of Elo rating the home team gained from the game. Negative when the home team lost ground.
+    home_elo_change is HomePostgameElo - HomePregameElo
+
+    #(doc) Points of Elo rating the away team gained from the game. Negative when the away team lost ground.
+    away_elo_change is AwayPostgameElo - AwayPregameElo
+
+    #(doc) How dramatic the game was, from its excitement rating: Instant classic above 8, Thriller above 6, Competitive above 4, and Routine at 4 or below.
+    excitement_tier is
+      pick 'Instant classic' when ExcitementIndex > 8
+      pick 'Thriller' when ExcitementIndex > 6
+      pick 'Competitive' when ExcitementIndex > 4
+      else 'Routine'
+
+  // ---- Season and week ---------------------------------------------
+  dimension:
+
+    #(doc) Season year as text, for example 2026. What the season picker filters on.
+    season_label is Season::string
+
+    #(doc) The week as a reader names it: Week 1 through Week 16 in the regular season, and Postseason for every bowl and College Football Playoff game.
+    // The feed numbers postseason weeks from 1 again, so "Week 1" alone
+    // would mix opening weekend with the bowls.
+    week_label is
+      pick 'Postseason' when SeasonType = 'postseason'
+      else concat('Week ', `Week`::string)
+
+    #(doc) Sort key for week_label, so Week 10 follows Week 9 and the postseason comes last.
+    week_sort is
+      pick 100 when SeasonType = 'postseason'
+      else `Week`
+
+  // ---- Line scores ---------------------------------------------------
+  //  HomeLineScores / AwayLineScores are comma-separated points per
+  //  period — "7,10,0,14", plus one entry per overtime period. They are
+  //  missing on a couple dozen completed games; everything here goes null
+  //  there, and the thrill index scores those games without late drama.
+  dimension:
+
+    #(doc) Number of periods the game went, from the line score: 4 for regulation, 5 or more when it went to overtime.
+    periods_played is length(HomeLineScores) - length(replace(HomeLineScores, ',', '')) + 1
+
+    #(doc) True when the game went to overtime.
+    is_overtime is periods_played > 4
+
+    #(doc) Home team's points through three quarters, from the line score.
+    home_points_after_three is
+      pick null when HomeLineScores is null
+      else coalesce(split_part!string(HomeLineScores, ',', 1):::number, 0)
+        + coalesce(split_part!string(HomeLineScores, ',', 2):::number, 0)
+        + coalesce(split_part!string(HomeLineScores, ',', 3):::number, 0)
+
+    #(doc) Away team's points through three quarters, from the line score.
+    away_points_after_three is
+      pick null when AwayLineScores is null
+      else coalesce(split_part!string(AwayLineScores, ',', 1):::number, 0)
+        + coalesce(split_part!string(AwayLineScores, ',', 2):::number, 0)
+        + coalesce(split_part!string(AwayLineScores, ',', 3):::number, 0)
+
+    #(doc) Home points minus away points going into the fourth quarter. Positive when the home team led.
+    margin_after_three is home_points_after_three - away_points_after_three
+
+    #(doc) True when the eventual winner was behind going into the fourth quarter.
+    is_comeback_win is
+      (HomePoints > AwayPoints and margin_after_three < 0)
+      or (AwayPoints > HomePoints and margin_after_three > 0)
+
+  // ---- Thrill index --------------------------------------------------
+  //  A 0-100 excitement score built from the box score alone, so it
+  //  exists for every completed game in every division — CFBD's own
+  //  ExcitementIndex (win-probability swings) is missing on most lower-
+  //  division games and lags days behind on new ones.
+  //
+  //    closeness     35   final margin: 35 at 0, falling to 0 at 28
+  //    late drama    20   margin entering the 4th: 20 at 0, 0 at 17
+  //    comeback      10   the winner trailed after three quarters
+  //    overtime      15   it went past regulation
+  //    scoring       12   combined points, full marks at 80
+  //    upset         10   the Elo underdog won, full marks at a 250 gap
+  //    stakes         8   College Football Playoff game
+  //
+  //  The parts sum past 100 on purpose and are capped: a one-point
+  //  overtime comeback does not need every box ticked to be a classic.
+  dimension:
+
+    #(doc) Thrill index points for how close the final score was: 35 for a one-possession finish at a margin of zero, falling to 0 at a 28-point margin.
+    thrill_closeness is 35 * greatest(0, 1 - victory_margin / 28.0)
+
+    #(doc) Thrill index points for how close the game was going into the fourth quarter: 20 when tied, falling to 0 at a 17-point margin. Zero when the line score is missing.
+    thrill_late_drama is coalesce(20 * greatest(0, 1 - abs(margin_after_three) / 17.0), 0)
+
+    #(doc) Thrill index points for a comeback: 10 when the winner trailed after three quarters.
+    thrill_comeback is pick 10 when is_comeback_win else 0
+
+    #(doc) Thrill index points for overtime: 15 when the game went past regulation.
+    thrill_overtime is pick 15 when is_overtime else 0
+
+    #(doc) Thrill index points for scoring: up to 12, reached at 80 combined points.
+    thrill_scoring is 12 * least(1, total_points / 80.0)
+
+    #(doc) Thrill index points for an upset: up to 10 when the team with the lower pregame Elo won, full marks at a 250-point rating gap.
+    thrill_upset is
+      pick 10 * least(1, abs(pregame_elo_edge) / 250.0) when is_elo_upset
+      else 0
+
+    #(doc) Thrill index points for stakes: 8 for a College Football Playoff game.
+    thrill_stakes is pick 8 when is_playoff_game else 0
+
+    #|(doc)
+      How exciting the game was, from 0 to 100, built from the box score so every completed
+      game has one: how close the final was, how close it was entering the fourth quarter,
+      whether the winner came from behind, overtime, combined scoring, an Elo upset, and
+      playoff stakes. Around 25 is a routine game; above 75 is an instant classic. Empty
+      until the game is played.
+    |#
+    thrill_index is
+      pick null when not Completed or HomePoints is null or AwayPoints is null
+      else round(least(100,
+        thrill_closeness + thrill_late_drama + thrill_comeback + thrill_overtime
+        + thrill_scoring + thrill_upset + thrill_stakes
+      ))
+
+    #(doc) Thrill index in words: Instant classic at 75 or more, Thriller at 55, Good game at 35, and Routine below that.
+    thrill_tier is
+      pick null when thrill_index is null
+      pick 'Instant classic' when thrill_index >= 75
+      pick 'Thriller' when thrill_index >= 55
+      pick 'Good game' when thrill_index >= 35
+      else 'Routine'
+
+  // ---- Measures ----------------------------------------------------
+  measure:
+
+    #(doc) Number of games.
+    game_count is count()
+
+    #(doc) Number of games that have been played and have a final score.
+    completed_game_count is count() { where: Completed }
+
+    #(doc) Total points scored by both teams across all games.
+    points_scored is sum(HomePoints) + sum(AwayPoints)
+
+    #(doc) Average combined points scored by both teams in a game.
+    avg_total_points is avg(total_points)
+
+    #(doc) Average points scored by the home team.
+    avg_home_points is avg(HomePoints)
+
+    #(doc) Average points scored by the away team.
+    avg_away_points is avg(AwayPoints)
+
+    #(doc) Average winning margin in points.
+    avg_victory_margin is avg(victory_margin)
+
+    #(doc) Share of completed games won by the home team.
+    # percent
+    home_win_rate is count() { where: home_win } / nullif(count() { where: Completed and HomePoints != AwayPoints }, 0)
+
+    #(doc) Share of games decided by 8 points or fewer.
+    # percent
+    one_score_game_rate is count() { where: victory_margin <= 8 } / nullif(completed_game_count, 0)
+
+    #(doc) Number of games decided by 28 points or more.
+    blowout_count is count() { where: victory_margin >= 28 }
+
+    #(doc) Number of games in which the team with the lower pregame Elo rating won.
+    upset_count is count() { where: is_elo_upset }
+
+    #(doc) Total announced attendance across all games that reported it, in people.
+    total_attendance is sum(Attendance)
+
+    #(doc) Average announced attendance per game, in people.
+    avg_attendance is avg(Attendance)
+
+    #(doc) Largest announced attendance for a single game, in people.
+    max_attendance is max(Attendance)
+
+    #(doc) Average excitement rating across games. Typical games rate near 4.
+    avg_excitement is avg(ExcitementIndex)
+
+    #(doc) Highest excitement rating of any game in the group.
+    max_excitement is max(ExcitementIndex)
+
+    #(doc) Average thrill index across completed games, 0 to 100.
+    avg_thrill_index is avg(thrill_index)
+
+    #(doc) Share of games played at a neutral venue.
+    # percent
+    neutral_site_rate is count() { where: NeutralSite } / nullif(game_count, 0)
+
+    #(doc) Share of games played between teams from the same conference.
+    # percent
+    conference_game_rate is count() { where: ConferenceGame } / nullif(game_count, 0)
+
+    #(doc) Average pregame Elo rating of the home team. Higher is stronger; roughly 1500 is average.
+    avg_home_pregame_elo is avg(HomePregameElo)
+
+    #(doc) Number of distinct teams appearing as the home team.
+    home_team_count is count(HomeTeam)
+
+  // ---- Views -------------------------------------------------------
+
+  #(doc) Games per week with scoring, margins and excitement, in schedule order. Answers how the season's weeks compare.
+  view: by_week is {
+    group_by: SeasonType, `Week`
+    aggregate: game_count, avg_total_points, avg_victory_margin, avg_excitement
+    order_by: SeasonType, `Week`
+  }
+
+  #(doc) Volume and scoring of games by the home team's conference, busiest conference first.
+  view: by_conference is {
+    where: HomeConference is not null
+    group_by: conference is HomeConference
+    aggregate: game_count, avg_total_points, avg_victory_margin, home_win_rate, avg_attendance
+    order_by: game_count desc
+  }
+
+  #(doc) Games by division matchup, for example FBS against FCS, showing how lopsided each type of matchup is.
+  view: by_classification is {
+    group_by: classification_matchup
+    aggregate: game_count, avg_total_points, avg_victory_margin
+    order_by: game_count desc
+  }
+
+  #(doc) The wildest finishes of the season, ranked by excitement rating.
+  view: most_exciting_games is {
+    where: Completed
+    group_by: game_date, matchup, final_score, ExcitementIndex
+    order_by: ExcitementIndex desc
+    limit: 25
+  }
+
+  #(doc) The most lopsided results of the season, ranked by winning margin.
+  view: biggest_blowouts is {
+    where: Completed
+    group_by: game_date, matchup, final_score, victory_margin
+    order_by: victory_margin desc
+    limit: 25
+  }
+
+  #(doc) The highest-scoring games of the season, ranked by combined points.
+  view: highest_scoring_games is {
+    where: Completed
+    group_by: game_date, matchup, final_score, total_points
+    order_by: total_points desc
+    limit: 25
+  }
+
+  #(doc) Best-attended games of the season, ranked by announced attendance.
+  view: best_attended_games is {
+    where: Attendance is not null
+    group_by: game_date, matchup, Venue, Attendance
+    order_by: Attendance desc
+    limit: 25
+  }
+
+  #(doc) Games won by the team the pregame Elo ratings rated lower, biggest rating gap first.
+  view: biggest_upsets is {
+    where: Completed and is_elo_upset
+    group_by: game_date, matchup, final_score, winner
+    aggregate: elo_gap is max(abs(pregame_elo_edge))
+    order_by: elo_gap desc
+    limit: 25
+  }
+
+  #(doc) The College Football Playoff bracket in round order, with each game's result.
+  view: playoff_bracket is {
+    where: is_playoff_game
+    group_by:
+      round_name is `Playoff RoundName`
+      bracket_slot is `Playoff BracketSlot`
+      bowl is `Playoff BowlName`
+      game_date
+      matchup
+      final_score
+    order_by: bracket_slot
+  }
+
+  #(doc) Season shape week by week: how many games are played and how many points are scored.
+  view: scoring_trend is {
+    group_by: game_date
+    aggregate: game_count, avg_total_points
+    order_by: game_date
+  }
+}

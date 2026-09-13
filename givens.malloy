@@ -1,0 +1,88 @@
+##! experimental { givens }
+
+// =====================================================================
+//  GIVENS — the filter controls the dashboards expose
+//
+//  Every picker narrows to the ones before it: the conference list is
+//  the chosen season and division's conferences, the team list the
+//  chosen conference's teams. Each suggest query references the OTHER
+//  givens and never its own, so a list never collapses to its own pick.
+//  All of these round-trip through the URL as $NAME, so a filtered page
+//  is a shareable link.
+// =====================================================================
+
+import "index.malloy"
+
+given:
+
+  #(doc) Season to show. The games reports pin their own season; the team rankings let the reader switch.
+  # label="Season"
+  # control=select
+  # suggest { query=season_suggest dimension=season_label }
+  SEASON :: filter<string> is f'2026'
+
+  #(doc) Division to include: fbs, fcs, ii or iii. A game is included when either team plays in it. Empty shows every division.
+  # label="Division"
+  # control=select
+  # suggest { query=division_suggest dimension=classification }
+  DIVISION :: filter<string> is f'fbs'
+
+  #(doc) Conference to include. A game is included when either team belongs to it. Empty shows every conference.
+  # label="Conference"
+  # control=select
+  # suggest { query=conference_suggest dimension=conference }
+  CONFERENCE :: filter<string> is f''
+
+  #(doc) One team whose games to show. Empty shows every team. Narrows to the chosen conference when one is picked.
+  # label="Team"
+  # control=select
+  # suggest { query=team_suggest dimension=team }
+  TEAM :: filter<string> is f''
+
+  #(doc) Week of the season to show: Week 1 through Week 16, or Postseason. Empty shows the whole season.
+  # label="Week"
+  # control=select
+  # suggest { query=week_suggest dimension=week_label }
+  GAME_WEEK :: filter<string> is f''
+
+  #|(doc)
+    Leave out garbage-time possessions — the ones neither team is still playing to win —
+    from the drive-efficiency columns. Uses BCFtoys' garbage-possession rules. Records and
+    points per game always count every game.
+  |#
+  # label="Hide garbage drives"
+  EXCLUDE_GARBAGE :: boolean is true
+
+#(doc) Every season in the data, newest first. Feeds the season picker.
+query: season_suggest is team_games -> {
+  group_by: season_label
+  order_by: season_label desc
+}
+
+#(doc) Divisions with games in the chosen season. Feeds the division picker.
+query: division_suggest is team_games -> {
+  where: season_label ~ $SEASON, classification is not null
+  group_by: classification
+  order_by: classification
+}
+
+#(doc) Conferences in the chosen season and division, alphabetically. Feeds the conference picker.
+query: conference_suggest is team_games -> {
+  where: season_label ~ $SEASON, classification ~ $DIVISION, conference is not null
+  group_by: conference
+  order_by: conference
+}
+
+#(doc) Teams in the chosen season, division and conference, alphabetically. Feeds the team picker.
+query: team_suggest is team_games -> {
+  where: season_label ~ $SEASON, classification ~ $DIVISION, conference ~ $CONFERENCE
+  group_by: team
+  order_by: team
+}
+
+#(doc) Weeks of the chosen season in calendar order, the postseason last. Feeds the week picker.
+query: week_suggest is games -> {
+  where: season_label ~ $SEASON
+  group_by: week_label, week_sort
+  order_by: week_sort
+}

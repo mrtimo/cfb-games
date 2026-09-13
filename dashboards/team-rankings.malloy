@@ -1,0 +1,78 @@
+##! experimental { givens }
+
+// =====================================================================
+//  TEAM RANKINGS
+//
+//  One row per team: record, points scored and allowed, and drive
+//  efficiency on both sides of the ball. The component
+//  (team-rankings.tsx) draws it as one wide table that re-ranks on a
+//  click of any column header.
+//
+//  The garbage-time checkbox thins the DRIVE columns only. It is applied
+//  on the joined drive sources below rather than in the query's where:,
+//  because a where: on one join would also drop the other join's rows
+//  from the fan-out — and would knock whole games out of the record.
+// =====================================================================
+
+import "../index.malloy"
+import "../givens.malloy"
+
+#(doc) Drives with garbage time left out when the checkbox is on.
+source: ranking_drives is drives extend {
+  where: $EXCLUDE_GARBAGE = false or not is_garbage_possession
+}
+
+#(doc) Team-games with the (optionally garbage-free) drives each team ran and defended.
+source: ranking_team_games is team_games extend {
+  join_many: off is ranking_drives on game_id = off.GameId and team = off.Offense
+  join_many: def is ranking_drives on game_id = def.GameId and team = def.Defense
+}
+
+#" Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank.
+# artifact { title="Team Rankings" }
+query: team_rankings is ranking_team_games -> {
+  where:
+    season_label ~ $SEASON,
+    classification ~ $DIVISION,
+    conference ~ $CONFERENCE
+
+  group_by:
+    team
+    conference
+
+  aggregate:
+    // ---- record ----
+    games_played
+    wins
+    losses
+    win_rate
+    points_per_game
+    points_allowed_per_game
+    avg_scoring_margin
+
+    // ---- offense ----
+    offense_drives is off.count()
+    offense_points_per_drive is off.points_per_drive
+    offense_yards_per_play is off.yards_per_play
+    offense_eckel_rate is off.eckel_rate
+    offense_touchdown_rate is off.touchdown_rate
+    offense_explosive_rate is off.explosive_drive_rate
+    offense_three_and_out_rate is off.three_and_out_rate
+    offense_turnover_rate is off.turnover_rate
+    offense_avg_start is off.avg_start_field_position
+
+    // ---- defense ----
+    defense_points_per_drive is def.points_per_drive
+    defense_yards_per_play is def.yards_per_play
+    defense_eckel_rate is def.eckel_rate
+    defense_three_and_out_rate is def.three_and_out_rate
+    defense_takeaway_rate is def.turnover_rate
+
+    // ---- overall ----
+    net_points_per_drive is off.points_per_drive - def.points_per_drive
+    current_elo
+    strength_of_schedule
+
+  having: games_played > 0
+  order_by: net_points_per_drive desc
+}
