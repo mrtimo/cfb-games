@@ -9,7 +9,7 @@
 <body>
 <div id="root"></div>
 <script>
-window.__DASHBOARD__ = {"name":"games-2025","query":"games_list","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.","entryFile":"dashboards/games-2025.malloy","givens":{"SEASON":"2025"}};
+window.__DASHBOARD__ = {"name":"games-2025","query":"games_2025","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.","entryFile":"dashboards/games-2025.malloy","givens":{"SEASON":"2025"}};
 window.__GIVENS__ = [{"name":"SEASON","type":"filter\u003cstring>","filterType":"string","default":"2026","tags":{"label":"Season","control":"select"},"suggest":{"dimension":"season_label","query":"season_suggest"}},{"name":"DIVISION","type":"filter\u003cstring>","filterType":"string","default":"fbs","tags":{"label":"Division","control":"select"},"suggest":{"dimension":"classification","query":"division_suggest"}},{"name":"CONFERENCE","type":"filter\u003cstring>","filterType":"string","default":"","tags":{"label":"Conference","control":"select"},"suggest":{"dimension":"conference","query":"conference_suggest"}},{"name":"TEAM","type":"filter\u003cstring>","filterType":"string","default":"","tags":{"label":"Team","control":"select"},"suggest":{"dimension":"team","query":"team_suggest"}},{"name":"GAME_WEEK","type":"filter\u003cstring>","filterType":"string","default":"","tags":{"label":"Week","control":"select"},"suggest":{"dimension":"week_label","query":"week_suggest"}}];
 </script>
 <script type="module" src="../assets/frames/games-2025.js"></script>

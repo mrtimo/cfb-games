@@ -27,8 +27,8 @@ const banner = `// =============================================================
 // =====================================================================
 `;
 
-const imports = `import React, { useEffect, useMemo, useState } from "react";
-import { Controls, Given, useGiven, useQuery, useUrlState, filters } from "@malloyyo/dashboard";
+const imports = `import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Controls, Given, runData, useGiven, useQuery, useUrlState, filters } from "@malloyyo/dashboard";
 `;
 
 const body = [banner, imports, read("components/drive-chart.part.tsx"), read("components/games-report.part.tsx")].join("\n");

@@ -8,10 +8,15 @@
 //  (team-rankings.tsx) draws it as one wide table that re-ranks on a
 //  click of any column header.
 //
+//  ONE drive join per team-game, holding the drives the team was on the
+//  field for on either side of the ball; offense and defense are filters
+//  on it. Two separate joins (offense drives, defense drives) multiplied
+//  out to ~12 x 12 rows per team-game and built the drive model twice —
+//  4.4 s in the browser. One join is ~24 rows and one pass.
+//
 //  The garbage-time checkbox thins the DRIVE columns only. It is applied
-//  on the joined drive sources below rather than in the query's where:,
-//  because a where: on one join would also drop the other join's rows
-//  from the fan-out — and would knock whole games out of the record.
+//  on the joined drive source rather than in the query's where:, which
+//  would knock whole games out of the record.
 // =====================================================================
 
 import "../index.malloy"
@@ -22,10 +27,21 @@ source: ranking_drives is drives extend {
   where: $EXCLUDE_GARBAGE = false or not is_garbage_possession
 }
 
-#(doc) Team-games with the (optionally garbage-free) drives each team ran and defended.
+#(doc) Team-games with every (optionally garbage-free) drive the team was on the field for, on either side of the ball.
 source: ranking_team_games is team_games extend {
-  join_many: off is ranking_drives on game_id = off.GameId and team = off.Offense
-  join_many: def is ranking_drives on game_id = def.GameId and team = def.Defense
+  join_many: team_drives is ranking_drives
+    on game_id = team_drives.GameId and (team = team_drives.Offense or team = team_drives.Defense)
+
+  dimension:
+    #(doc) True for a drive this team ran.
+    on_offense is team_drives.Offense = team
+
+    #(doc) True for a drive this team defended.
+    // Tested directly, never as `not on_offense`: a team-game with no drives
+    // (an unplayed game, or one against a division without drive data) still
+    // joins one empty row, and `not` of its null counts it as a defensive
+    // drive — one phantom drive per such game in every defense column.
+    on_defense is team_drives.Defense = team
 }
 
 #" Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank.
@@ -51,25 +67,27 @@ query: team_rankings is ranking_team_games -> {
     avg_scoring_margin
 
     // ---- offense ----
-    offense_drives is off.count()
-    offense_points_per_drive is off.points_per_drive
-    offense_yards_per_play is off.yards_per_play
-    offense_eckel_rate is off.eckel_rate
-    offense_touchdown_rate is off.touchdown_rate
-    offense_explosive_rate is off.explosive_drive_rate
-    offense_three_and_out_rate is off.three_and_out_rate
-    offense_turnover_rate is off.turnover_rate
-    offense_avg_start is off.avg_start_field_position
+    offense_drives is team_drives.drive_count { where: on_offense }
+    offense_points_per_drive is team_drives.points_per_drive { where: on_offense }
+    offense_yards_per_play is team_drives.yards_per_play { where: on_offense }
+    offense_eckel_rate is team_drives.eckel_rate { where: on_offense }
+    offense_touchdown_rate is team_drives.touchdown_rate { where: on_offense }
+    offense_explosive_rate is team_drives.explosive_drive_rate { where: on_offense }
+    offense_three_and_out_rate is team_drives.three_and_out_rate { where: on_offense }
+    offense_turnover_rate is team_drives.turnover_rate { where: on_offense }
+    offense_avg_start is team_drives.avg_start_field_position { where: on_offense }
 
     // ---- defense ----
-    defense_points_per_drive is def.points_per_drive
-    defense_yards_per_play is def.yards_per_play
-    defense_eckel_rate is def.eckel_rate
-    defense_three_and_out_rate is def.three_and_out_rate
-    defense_takeaway_rate is def.turnover_rate
+    defense_points_per_drive is team_drives.points_per_drive { where: on_defense }
+    defense_yards_per_play is team_drives.yards_per_play { where: on_defense }
+    defense_eckel_rate is team_drives.eckel_rate { where: on_defense }
+    defense_three_and_out_rate is team_drives.three_and_out_rate { where: on_defense }
+    defense_takeaway_rate is team_drives.turnover_rate { where: on_defense }
 
     // ---- overall ----
-    net_points_per_drive is off.points_per_drive - def.points_per_drive
+    net_points_per_drive is
+      team_drives.points_per_drive { where: on_offense }
+      - team_drives.points_per_drive { where: on_defense }
     current_elo
     strength_of_schedule
 

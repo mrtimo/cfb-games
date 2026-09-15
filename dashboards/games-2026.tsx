@@ -3,8 +3,8 @@
 //  Do not edit here: edit the parts and re-run `node sync-components.mjs`.
 // =====================================================================
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Controls, Given, useGiven, useQuery, useUrlState, filters } from "@malloyyo/dashboard";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Controls, Given, runData, useGiven, useQuery, useUrlState, filters } from "@malloyyo/dashboard";
 
 // =====================================================================
 //  Drive chart — the React/SVG chart from ../dashboards/team-drive-charts.tsx,
@@ -542,7 +542,8 @@ export function DriveChart({
 // =====================================================================
 //  Games report — the page
 //
-//  One scoreboard card per game, from the dashboard's games_list query.
+//  One scoreboard card per game, from the dashboard's own query (named
+//  in its # artifact, so the 2025 and 2026 reports share this component).
 //  The .malloy file owns every filter (team, conference, division, week
 //  and the pinned season); this component owns what the reader does with
 //  the result: the sort order, paging, and the drive charts.
@@ -550,11 +551,10 @@ export function DriveChart({
 //  View-state lives in the URL next to the givens, so a sorted, filtered
 //  page is a link: ~sort=thrill, ~orient=down.
 //
-//  Drive charts load lazily. With one team picked, every one of its games
-//  opens with its chart, fed by a single team_game_drives query. Without
-//  one, a card's chart runs its own one-game query when it is opened —
-//  a week can hold three hundred games, and nobody reads three hundred
-//  drive charts.
+//  Drive charts are open by default. Their drives are fetched for the
+//  games on screen in ONE query per page of cards — not one per game —
+//  and kept per game id, so re-sorting, re-filtering or paging back over
+//  games already drawn never asks for them again.
 // =====================================================================
 
 const SURFACE = "#ffffff";
@@ -616,6 +616,7 @@ const fmtKickoff = (g: any) => {
 };
 
 const isPlayed = (g: any) => !!g.completed && num(g.home_points) != null && num(g.away_points) != null;
+const canChart = (g: any) => isPlayed(g) && !!g.has_drive_detail;
 
 const winnerOf = (g: any) => {
   if (!isPlayed(g)) return null;
@@ -807,30 +808,16 @@ function ThrillMeter({ g }: { g: any }) {
   );
 }
 
-/** One game's drive chart, fetched on its own when the card is opened. */
-function LazyDriveChart({ g, focusTeam, orient }: { g: any; focusTeam?: string; orient: DriveOrient }) {
-  const q = useQuery({
-    malloy: `drives -> game_drive_chart + { where: GameId = ${Number(g.game_id)} }`,
-  });
-  if (q.loading) return <div style={{ fontSize: 12, color: MUTED, padding: "8px 0" }}>Loading drives…</div>;
-  if (q.error) return <div style={{ fontSize: 12, color: "var(--dash-danger, #b91c1c)" }}>{String(q.error)}</div>;
-  if (!q.rows?.length) return <div style={{ fontSize: 12, color: MUTED }}>No drive data for this game.</div>;
-  return (
-    <DriveChart game={{ home_team: g.home_team, away_team: g.away_team, rows: q.rows }} focusTeam={focusTeam} orient={orient} />
-  );
-}
-
-function GameCard({ g, teamDrives, focusTeam, orient }: {
+function GameCard({ g, drives, drivesError, focusTeam, orient }: {
   g: any;
-  /** The team-mode drives for this game, or undefined outside team mode. */
-  teamDrives?: { rows: any[] | undefined; loading: boolean };
+  /** This game's drives: undefined while they load, [] when the feed has none. */
+  drives?: any[];
+  drivesError?: string | null;
   focusTeam?: string;
   orient: DriveOrient;
 }) {
-  const teamMode = !!teamDrives;
-  const [open, setOpen] = useState(teamMode);
-  useEffect(() => setOpen(teamMode), [teamMode]);
-  const canChart = isPlayed(g) && !!g.has_drive_detail;
+  const [open, setOpen] = useState(true);
+  const chartable = canChart(g);
 
   const tags: React.ReactNode[] = [];
   if (g.playoff_round) tags.push(<Tag key="po" strong>{g.playoff_round}</Tag>);
@@ -868,7 +855,7 @@ function GameCard({ g, teamDrives, focusTeam, orient }: {
         </div>
       </div>
 
-      {canChart && (
+      {chartable && (
         <div style={{ marginTop: 8 }}>
           <button
             onClick={() => setOpen(!open)}
@@ -881,20 +868,21 @@ function GameCard({ g, teamDrives, focusTeam, orient }: {
           </button>
           {open && (
             <div style={{ marginTop: 10 }}>
-              {teamMode ? (
-                teamDrives!.loading ? (
-                  <div style={{ fontSize: 12, color: MUTED }}>Loading drives…</div>
-                ) : teamDrives!.rows?.length ? (
-                  <DriveChart
-                    game={{ home_team: g.home_team, away_team: g.away_team, rows: teamDrives!.rows }}
-                    focusTeam={focusTeam}
-                    orient={orient}
-                  />
+              {drives === undefined ? (
+                drivesError ? (
+                  <div style={{ fontSize: 12, color: "var(--dash-danger, #b91c1c)" }}>{drivesError}</div>
                 ) : (
-                  <div style={{ fontSize: 12, color: MUTED }}>No drive data for this game.</div>
+                  // hold roughly the chart's height, so cards below don't jump when it lands
+                  <div style={{ fontSize: 12, color: MUTED, height: 420 }}>Loading drives…</div>
                 )
+              ) : drives.length ? (
+                <DriveChart
+                  game={{ home_team: g.home_team, away_team: g.away_team, rows: drives }}
+                  focusTeam={focusTeam}
+                  orient={orient}
+                />
               ) : (
-                <LazyDriveChart g={g} orient={orient} />
+                <div style={{ fontSize: 12, color: MUTED }}>No drive data for this game.</div>
               )}
             </div>
           )}
@@ -904,27 +892,52 @@ function GameCard({ g, teamDrives, focusTeam, orient }: {
   );
 }
 
-/** Every drive of the picked team's games in one query, split by game. Mounted only in team mode. */
-function TeamDrives({ givens, children }: {
-  givens: any;
-  children: (byGame: Map<number, any[]>, loading: boolean, error?: string) => React.ReactNode;
-}) {
-  const q = useQuery({ query: "team_game_drives", givens });
-  const byGame = useMemo(() => {
-    const m = new Map<number, any[]>();
-    (q.rows || []).forEach((r: any) => {
-      const id = Number(r.game_id);
-      if (!m.has(id)) m.set(id, []);
-      m.get(id)!.push(r);
-    });
-    m.forEach((rows) => rows.sort((a, b) => Number(a.drive_number) - Number(b.drive_number)));
-    return m;
-  }, [q.rows]);
-  return <>{children(byGame, q.loading, q.error)}</>;
+/**
+ * Drives for the games on screen, fetched a page at a time and kept by game
+ * id for as long as the page is open. Returns the cache (read it with
+ * .get(id)) and the last error, if any.
+ */
+function useDrivesFor(gameIds: number[]) {
+  const cache = useRef(new Map<number, any[]>());
+  const inFlight = useRef(new Set<number>());
+  const [, repaint] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const key = gameIds.join(",");
+
+  useEffect(() => {
+    const missing = gameIds.filter((id) => !cache.current.has(id) && !inFlight.current.has(id));
+    for (let i = 0; i < missing.length; i += PAGE_SIZE) {
+      const batch = missing.slice(i, i + PAGE_SIZE);
+      batch.forEach((id) => inFlight.current.add(id));
+      // Game ids are integers, so the filter lists need no escaping. The
+      // DRIVE_GAMES given narrows the drive model to these games BEFORE its
+      // season-wide window passes (drive-games.malloy) — the where: alone
+      // would only filter after them.
+      const ids = batch.join(", ");
+      runData(`drives -> game_drive_chart + { where: GameId ~ f'${ids}' }`, { DRIVE_GAMES: ids })
+        .then((rows: any[]) => {
+          const byGame = new Map<number, any[]>(batch.map((id) => [id, []]));
+          rows.forEach((r) => byGame.get(Number(r.game_id))?.push(r));
+          byGame.forEach((list, id) => {
+            list.sort((a, b) => Number(a.drive_number) - Number(b.drive_number));
+            cache.current.set(id, list);
+          });
+          setError(null);
+        })
+        .catch((e: any) => setError(String(e?.message ?? e)))
+        .finally(() => {
+          batch.forEach((id) => inFlight.current.delete(id));
+          repaint((n) => n + 1);
+        });
+    }
+  }, [key]);
+
+  return { drives: cache.current, error };
 }
 
 export default function Dashboard({ dashboard, givens }: any) {
-  const list = useQuery({ query: "games_list", givens });
+  // the dashboard's own query, named in its # artifact tag
+  const list = useQuery({ query: dashboard?.query, givens });
   const teamGiven = useGiven("TEAM");
   const team: string = useMemo(() => pickValues(teamGiven.value)[0] || "", [teamGiven.value]);
 
@@ -935,6 +948,11 @@ export default function Dashboard({ dashboard, givens }: any) {
   const rows: any[] = list.rows || [];
   const sorted = useMemo(() => sortGames(rows, sort), [rows, sort]);
   useEffect(() => setShown(PAGE_SIZE), [rows, sort]);
+
+  const visible = sorted.slice(0, shown);
+  const { drives, error: drivesError } = useDrivesFor(
+    list.loading ? [] : visible.filter(canChart).map((g) => Number(g.game_id))
+  );
 
   const played = rows.filter(isPlayed);
   const avgThrill = played.length
@@ -955,42 +973,14 @@ export default function Dashboard({ dashboard, givens }: any) {
   const season = rows[0]?.season ?? String(dashboard?.title || "").match(/\d{4}/)?.[0] ?? "";
   const title = dashboard?.title || `${season} Games`;
 
-  const renderList = (byGame?: Map<number, any[]>, drivesLoading = false) => (
-    <>
-      {sorted.slice(0, shown).map((g) => (
-        <GameCard
-          key={g.game_id}
-          g={g}
-          teamDrives={byGame ? { rows: byGame.get(Number(g.game_id)), loading: drivesLoading } : undefined}
-          focusTeam={team || undefined}
-          orient={orient as DriveOrient}
-        />
-      ))}
-      {sorted.length > shown && (
-        <div style={{ textAlign: "center", marginTop: 16 }}>
-          <button
-            onClick={() => setShown(shown + PAGE_SIZE)}
-            style={{
-              fontSize: 13, padding: "7px 16px", borderRadius: 8, cursor: "pointer",
-              border: "1px solid var(--dash-border, #d1d5db)", background: "var(--dash-control-bg, #fff)",
-              color: "var(--dash-fg, #1a1a1a)",
-            }}
-          >
-            Show {Math.min(PAGE_SIZE, sorted.length - shown)} more of {sorted.length - shown} remaining
-          </button>
-        </div>
-      )}
-    </>
-  );
-
   return (
     <div style={{ maxWidth: 1320, margin: "0 auto", padding: "20px 20px 48px" }}>
       <h1 style={{ margin: "0 0 2px", fontSize: 26, fontWeight: 700, letterSpacing: "-0.01em" }}>
         {team ? `${team} · ${title}` : title}
       </h1>
       <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--dash-muted, #6b7280)" }}>
-        Every game of the {season} season, with its line score and a thrill index. Pick a team,
-        conference or week to narrow the list; pick one team to open every one of its drive charts.
+        Every game of the {season} season, with its line score, thrill index and drive chart. Pick a
+        team, conference or week to narrow the list.
       </p>
 
       <Controls>
@@ -1051,18 +1041,34 @@ export default function Dashboard({ dashboard, givens }: any) {
         <div style={{ fontSize: 13, color: MUTED, marginTop: 16 }}>No games match these filters.</div>
       )}
 
-      {!list.loading && !list.error && (team ? (
-        <TeamDrives givens={givens}>
-          {(byGame, loading, error) => (
-            <>
-              {error && <div style={{ fontSize: 12, color: "var(--dash-danger, #b91c1c)", marginTop: 10 }}>{error}</div>}
-              {renderList(byGame, loading)}
-            </>
+      {!list.loading && !list.error && (
+        <>
+          {visible.map((g) => (
+            <GameCard
+              key={g.game_id}
+              g={g}
+              drives={drives.get(Number(g.game_id))}
+              drivesError={drivesError}
+              focusTeam={team || undefined}
+              orient={orient as DriveOrient}
+            />
+          ))}
+          {sorted.length > shown && (
+            <div style={{ textAlign: "center", marginTop: 16 }}>
+              <button
+                onClick={() => setShown(shown + PAGE_SIZE)}
+                style={{
+                  fontSize: 13, padding: "7px 16px", borderRadius: 8, cursor: "pointer",
+                  border: "1px solid var(--dash-border, #d1d5db)", background: "var(--dash-control-bg, #fff)",
+                  color: "var(--dash-fg, #1a1a1a)",
+                }}
+              >
+                Show {Math.min(PAGE_SIZE, sorted.length - shown)} more of {sorted.length - shown} remaining
+              </button>
+            </div>
           )}
-        </TeamDrives>
-      ) : (
-        renderList()
-      ))}
+        </>
+      )}
     </div>
   );
 }

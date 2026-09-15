@@ -1,0 +1,24 @@
+##! experimental { givens }
+
+// =====================================================================
+//  DRIVE_GAMES — narrow the drive model to a handful of games
+//
+//  The drive model runs three season-wide window-function passes before
+//  any query sees a row: dropping the feed's duplicate drives, counting
+//  possessions left, and repairing the running score. Every one of them
+//  partitions by game, so restricting the rows to a few games FIRST gives
+//  exactly the same answers for those games — over a few hundred drives
+//  instead of the whole season's.
+//
+//  The games reports set it when they fetch drive charts for the games on
+//  screen. Everything else leaves it empty, which filters nothing.
+//
+//  Declared in its own file, with no imports, because drives.malloy
+//  applies it and everything else imports drives.malloy.
+// =====================================================================
+
+given:
+
+  #(doc) Game ids to restrict the drive data to before the season-wide passes run, for example 401752677, 401754512. Empty (the default) means every game. Set by the games reports when they fetch drive charts; not a reader-facing control.
+  # label="Drive chart games"
+  DRIVE_GAMES :: filter<number> is f''

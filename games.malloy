@@ -23,6 +23,84 @@ import "raw.malloy"
 //  Eastern kickoff still lands on the Saturday calendar date.
 // =====================================================================
 
+// =====================================================================
+//  LINE SCORES AND THE THRILL INDEX — computed once each, as columns
+//
+//  Written as ordinary nested dimensions these were the slowest thing in
+//  the model to COMPILE. Malloy writes a dimension's whole expression out
+//  every place it is referenced: the tier referenced the index four times,
+//  the index its seven parts, the parts the parsed line score. One games
+//  query grew to 49 KB of SQL and took 2.2 s to compile in Node — many
+//  times that in the browser, and again on every filter change.
+//
+//  Three query stages turn each step into a column the next step reads, so
+//  every expression is written out once (the same query now compiles in a
+//  few milliseconds). The calc_ columns are private; games_base gives them
+//  their public names and docs.
+// =====================================================================
+
+#(doc) Games with the line score parsed: periods played and each team's points through three quarters.
+source: games_lines is games_raw extend {
+  dimension:
+    calc_periods_played is length(HomeLineScores) - length(replace(HomeLineScores, ',', '')) + 1
+
+    calc_home_points_after_three is
+      pick null when HomeLineScores is null
+      else coalesce(split_part!string(HomeLineScores, ',', 1):::number, 0)
+        + coalesce(split_part!string(HomeLineScores, ',', 2):::number, 0)
+        + coalesce(split_part!string(HomeLineScores, ',', 3):::number, 0)
+
+    calc_away_points_after_three is
+      pick null when AwayLineScores is null
+      else coalesce(split_part!string(AwayLineScores, ',', 1):::number, 0)
+        + coalesce(split_part!string(AwayLineScores, ',', 2):::number, 0)
+        + coalesce(split_part!string(AwayLineScores, ',', 3):::number, 0)
+} -> { select: * }
+
+#(doc) Games with each part of the thrill index as its own column.
+source: games_thrill_parts is games_lines extend {
+  dimension:
+    calc_margin_after_three is calc_home_points_after_three - calc_away_points_after_three
+
+    calc_is_comeback_win is
+      (HomePoints > AwayPoints and calc_home_points_after_three < calc_away_points_after_three)
+      or (AwayPoints > HomePoints and calc_home_points_after_three > calc_away_points_after_three)
+
+    calc_thrill_closeness is 35 * greatest(0, 1 - abs(HomePoints - AwayPoints) / 28.0)
+
+    calc_thrill_late_drama is
+      coalesce(20 * greatest(0, 1 - abs(calc_home_points_after_three - calc_away_points_after_three) / 17.0), 0)
+
+    calc_thrill_comeback is
+      pick 10 when
+        (HomePoints > AwayPoints and calc_home_points_after_three < calc_away_points_after_three)
+        or (AwayPoints > HomePoints and calc_home_points_after_three > calc_away_points_after_three)
+      else 0
+
+    calc_thrill_overtime is pick 15 when calc_periods_played > 4 else 0
+
+    calc_thrill_scoring is 12 * least(1, (HomePoints + AwayPoints) / 80.0)
+
+    calc_thrill_upset is
+      pick 10 * least(1, abs(HomePregameElo - AwayPregameElo) / 250.0) when
+        (HomePoints > AwayPoints and HomePregameElo < AwayPregameElo)
+        or (AwayPoints > HomePoints and AwayPregameElo < HomePregameElo)
+      else 0
+
+    calc_thrill_stakes is pick 8 when `Playoff Competition` is not null else 0
+} -> { select: * }
+
+#(doc) Games with the thrill index itself as a column.
+source: games_scored is games_thrill_parts extend {
+  dimension:
+    calc_thrill_index is
+      pick null when not Completed or HomePoints is null or AwayPoints is null
+      else round(least(100,
+        calc_thrill_closeness + calc_thrill_late_drama + calc_thrill_comeback + calc_thrill_overtime
+        + calc_thrill_scoring + calc_thrill_upset + calc_thrill_stakes
+      ))
+} -> { select: * }
+
 #|(doc)
   One row per college football game in the 2025 and 2026 seasons, across every division: FBS, FCS, Division II
   and Division III. Each game carries the final score, venue and announced attendance,
@@ -32,7 +110,7 @@ import "raw.malloy"
   Elo movement, and as the game-level context for drive-by-drive data, which joins on
   game id.
 |#
-source: games_base is games_raw
+source: games_base is games_scored
 include {
   public:
 
@@ -279,35 +357,26 @@ extend {
   //  period — "7,10,0,14", plus one entry per overtime period. They are
   //  missing on a couple dozen completed games; everything here goes null
   //  there, and the thrill index scores those games without late drama.
+  //  Parsed once, in games_lines above.
   dimension:
 
     #(doc) Number of periods the game went, from the line score: 4 for regulation, 5 or more when it went to overtime.
-    periods_played is length(HomeLineScores) - length(replace(HomeLineScores, ',', '')) + 1
+    periods_played is calc_periods_played
 
     #(doc) True when the game went to overtime.
-    is_overtime is periods_played > 4
+    is_overtime is calc_periods_played > 4
 
     #(doc) Home team's points through three quarters, from the line score.
-    home_points_after_three is
-      pick null when HomeLineScores is null
-      else coalesce(split_part!string(HomeLineScores, ',', 1):::number, 0)
-        + coalesce(split_part!string(HomeLineScores, ',', 2):::number, 0)
-        + coalesce(split_part!string(HomeLineScores, ',', 3):::number, 0)
+    home_points_after_three is calc_home_points_after_three
 
     #(doc) Away team's points through three quarters, from the line score.
-    away_points_after_three is
-      pick null when AwayLineScores is null
-      else coalesce(split_part!string(AwayLineScores, ',', 1):::number, 0)
-        + coalesce(split_part!string(AwayLineScores, ',', 2):::number, 0)
-        + coalesce(split_part!string(AwayLineScores, ',', 3):::number, 0)
+    away_points_after_three is calc_away_points_after_three
 
     #(doc) Home points minus away points going into the fourth quarter. Positive when the home team led.
-    margin_after_three is home_points_after_three - away_points_after_three
+    margin_after_three is calc_margin_after_three
 
     #(doc) True when the eventual winner was behind going into the fourth quarter.
-    is_comeback_win is
-      (HomePoints > AwayPoints and margin_after_three < 0)
-      or (AwayPoints > HomePoints and margin_after_three > 0)
+    is_comeback_win is calc_is_comeback_win
 
   // ---- Thrill index --------------------------------------------------
   //  A 0-100 excitement score built from the box score alone, so it
@@ -325,30 +394,29 @@ extend {
   //
   //  The parts sum past 100 on purpose and are capped: a one-point
   //  overtime comeback does not need every box ticked to be a classic.
+  //  Computed in games_thrill_parts and games_scored above.
   dimension:
 
     #(doc) Thrill index points for how close the final score was: 35 for a one-possession finish at a margin of zero, falling to 0 at a 28-point margin.
-    thrill_closeness is 35 * greatest(0, 1 - victory_margin / 28.0)
+    thrill_closeness is calc_thrill_closeness
 
     #(doc) Thrill index points for how close the game was going into the fourth quarter: 20 when tied, falling to 0 at a 17-point margin. Zero when the line score is missing.
-    thrill_late_drama is coalesce(20 * greatest(0, 1 - abs(margin_after_three) / 17.0), 0)
+    thrill_late_drama is calc_thrill_late_drama
 
     #(doc) Thrill index points for a comeback: 10 when the winner trailed after three quarters.
-    thrill_comeback is pick 10 when is_comeback_win else 0
+    thrill_comeback is calc_thrill_comeback
 
     #(doc) Thrill index points for overtime: 15 when the game went past regulation.
-    thrill_overtime is pick 15 when is_overtime else 0
+    thrill_overtime is calc_thrill_overtime
 
     #(doc) Thrill index points for scoring: up to 12, reached at 80 combined points.
-    thrill_scoring is 12 * least(1, total_points / 80.0)
+    thrill_scoring is calc_thrill_scoring
 
     #(doc) Thrill index points for an upset: up to 10 when the team with the lower pregame Elo won, full marks at a 250-point rating gap.
-    thrill_upset is
-      pick 10 * least(1, abs(pregame_elo_edge) / 250.0) when is_elo_upset
-      else 0
+    thrill_upset is calc_thrill_upset
 
     #(doc) Thrill index points for stakes: 8 for a College Football Playoff game.
-    thrill_stakes is pick 8 when is_playoff_game else 0
+    thrill_stakes is calc_thrill_stakes
 
     #|(doc)
       How exciting the game was, from 0 to 100, built from the box score so every completed
@@ -357,19 +425,14 @@ extend {
       playoff stakes. Around 25 is a routine game; above 75 is an instant classic. Empty
       until the game is played.
     |#
-    thrill_index is
-      pick null when not Completed or HomePoints is null or AwayPoints is null
-      else round(least(100,
-        thrill_closeness + thrill_late_drama + thrill_comeback + thrill_overtime
-        + thrill_scoring + thrill_upset + thrill_stakes
-      ))
+    thrill_index is calc_thrill_index
 
     #(doc) Thrill index in words: Instant classic at 75 or more, Thriller at 55, Good game at 35, and Routine below that.
     thrill_tier is
-      pick null when thrill_index is null
-      pick 'Instant classic' when thrill_index >= 75
-      pick 'Thriller' when thrill_index >= 55
-      pick 'Good game' when thrill_index >= 35
+      pick null when calc_thrill_index is null
+      pick 'Instant classic' when calc_thrill_index >= 75
+      pick 'Thriller' when calc_thrill_index >= 55
+      pick 'Good game' when calc_thrill_index >= 35
       else 'Routine'
 
   // ---- Measures ----------------------------------------------------

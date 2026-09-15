@@ -52,8 +52,44 @@ It is a single-page app rather than malloyyo's page-per-dashboard bundle:
 
 `spa/shell.ts` is the shell (DuckDB, Malloy, routing); `spa/frame-boot.ts` mounts a dashboard in
 its frame, talking to the shell with the malloyyo runtime's own iframe protocol. `build-site.mjs`
-runs `malloyyo dashboard bundle` for the dashboard metadata and model files, then builds both with
-the installed malloyyo CLI's runtime and esbuild.
+runs `malloyyo dashboard bundle` for the dashboard metadata, then builds both with the installed
+malloyyo CLI's runtime and esbuild.
+
+### What makes it load fast
+
+- **The model is compiled at build time.** `build-site.mjs` compiles one entry importing every
+  dashboard in Node, against native DuckDB, and ships the result as `assets/model.json` (about
+  1 MB gzipped). The browser never compiles a `.malloy` file — Malloy's compiler runs 20–30×
+  slower in a page — only each query's few lines. Before writing it, the build compiles every
+  query the site runs both from its dashboard file and from `model.json`, and fails if the SQL
+  differs. **Rebuild after changing any `.malloy` file or a parquet schema.** New rows need no
+  rebuild.
+- **Model, data and DuckDB start together** the moment the page loads. The parquet is fetched once
+  and decoded once into DuckDB tables (`cfb_games`, `cfb_drives`) by the `setupSQL` in
+  `malloy-config.json` — the same SQL the local connection runs, so dev, lint, the build and the
+  page all read identical tables. This mattered more than anything else after pre-compiling:
+  DuckDB-WASM spends ~0.4 s decoding parquet on every scan, even from memory, while a table scan
+  takes a few ms, and the drive model scans its data several times per query.
+- **Queries run content-first and are cached.** The shell runs one query at a time with the picker
+  lists (`*_suggest`) after the games and drive charts, and keeps every answer for the life of the
+  page, so a filter value already seen comes back instantly.
+- **No expression is written out more than once.** Malloy inlines a dimension's expression
+  everywhere it is used, and the thrill tier → index → parts → line-score chain grew one query to
+  49 KB of SQL and 2.2 s of compile per filter change. `games.malloy` now computes them in query
+  stages as columns (a few ms to compile). Keep deep chains of derived dimensions in stages.
+- **Frames carry only what they use.** Malloy's renderer and Vega are stubbed out of the frame
+  bundle (every dashboard draws itself), taking each frame from 4.5 MB of JavaScript to 0.3 MB.
+- **Drive charts load a page at a time** — one query for the 40 games on screen, cached per game —
+  and that query sets `DRIVE_GAMES` (`drive-games.malloy`), which narrows the drive model to those
+  games *before* its season-wide window passes (dedupe, possessions left, score repair). They all
+  partition by game, so the answers are identical over a few hundred drives instead of 45,000.
+- **Team Rankings joins drives once.** One join holds a team-game's drives on both sides of the
+  ball, with offense and defense as filters, instead of an offense join and a defense join that
+  multiplied to ~144 rows per team-game and built the drive model twice. (Test the defense side
+  as `on_defense`, never `not on_offense` — an unplayed game's empty join row would count as a
+  defensive drive.)
+
+The console logs a `[cfb]` line for each startup step and each query with its time.
 
 ## Run
 

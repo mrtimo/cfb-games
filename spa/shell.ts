@@ -3,25 +3,29 @@
 //  The app shell — one page, one DuckDB, every dashboard kept alive.
 //
 //  `malloyyo dashboard bundle` emits one HTML page per dashboard, and each
-//  page boots its own DuckDB-WASM and recompiles the model: every click in
-//  the nav is a full reload, and coming back to a report starts it over.
+//  page boots its own DuckDB-WASM and compiles the model from source in the
+//  browser — which is where the time goes: Malloy's compiler runs 20-30x
+//  slower in a page than in Node. Here:
 //
-//  Here the dashboards live in iframes under a single shell:
-//
-//    * The shell owns the ONLY DuckDB (from the jsDelivr CDN) and the only
-//      Malloy runtime. A frame asks for a query over postMessage — the
-//      runtime's own iframe protocol — and the shell answers it. Each
-//      dashboard's model is compiled once and reused.
-//    * A frame is created the first time its dashboard is opened and is
-//      never torn down, only hidden. Switching away and back — by the nav
-//      or by the browser's Back button — shows it exactly as it was left:
-//      filters, sort, opened drive charts, scroll position.
-//    * Each dashboard remembers its own query string. The address bar
-//      always carries the visible dashboard's filters, so any view is still
-//      a shareable link, and opening that link lands on the same state.
+//    * The model is COMPILED AT BUILD TIME (build-site.mjs) and shipped as
+//      assets/model.json. The page loads that definition and never sees a
+//      .malloy file; only each query's own few lines are compiled here.
+//    * Three things start the moment the page loads, side by side: the
+//      model.json download, the parquet downloads, and DuckDB-WASM (from
+//      the jsDelivr CDN).
+//    * The parquet is fetched ONCE, whole, and registered with DuckDB under
+//      the exact https URL the model reads. Every query after that is a
+//      memory read — no range requests back to Hugging Face per query.
+//    * Dashboards live in iframes that are created on first visit and then
+//      only hidden, so going back to one shows it exactly as it was left.
+//      A frame asks for a query over postMessage (the runtime's own iframe
+//      protocol) and the shell answers from the one shared database.
+//    * Each dashboard remembers its own query string; the address bar always
+//      carries the visible dashboard's filters, so every view is a link.
 //
 //  Every page of the site (index.html, games-2026.html, …) is this same
-//  shell; the file name picks the dashboard to show.
+//  shell; the file name picks the dashboard to show. Open the console for
+//  a timing line per startup step and per query ([cfb]).
 // =====================================================================
 
 import * as duckdb from "@duckdb/duckdb-wasm";
@@ -31,74 +35,171 @@ import { givensFromSearch, shareSearch, urlStateFromSearch } from "malloyyo:shar
 import { jsonRows } from "malloyyo:shared/json-rows";
 
 const SITE = window.__SITE__;
-const MODEL_FILES: Record<string, string> = window.__MODEL_FILES__ || {};
-const TABLE_FILES: Record<string, string> = window.__TABLE_FILES__ || {};
-const DASHBOARDS: { name: string; title: string; entryFile: string }[] = SITE.dashboards;
+const DASHBOARDS: { name: string; title: string }[] = SITE.dashboards;
 const byName = new Map(DASHBOARDS.map((d) => [d.name, d]));
 
-// ── DuckDB + Malloy, once for the whole site ────────────────────────
+const T0 = performance.now();
+const ms = (since = T0) => Math.round(performance.now() - since);
+const log = (msg: string) => console.info(`[cfb] ${msg} — ${ms()} ms after load`);
 
-// jsDelivr bundles pinned to the installed duckdb-wasm version, so no
-// binaries are copied into the site.
+// The directory the site is served from — "/" locally, "/<repo>/" on GitHub Pages.
+const siteBase = new URL("./", location.href);
+
+// ── start everything at once ────────────────────────────────────────
+
 class CdnDuckDB extends DuckDBWASMConnection {
   getBundles() {
     return duckdb.getJsDelivrBundles();
   }
 }
 
-// The model sources are inlined at build time (assets/model-files.js), keyed
-// by the file:// URL Malloy resolves imports against.
-const urlReader = {
-  readURL: async (url: URL | string) => {
-    const src = MODEL_FILES[url.toString()];
-    if (src == null) throw new Error(`model file not found: ${url}`);
-    return src;
-  },
-};
+const modelP = fetch(new URL(SITE.model, siteBase))
+  .then((r) => {
+    if (!r.ok) throw new Error(`model.json: ${r.status} ${r.statusText}`);
+    return r.json();
+  })
+  .then((def) => {
+    log("compiled model loaded");
+    return def;
+  });
 
-let runtimeP: Promise<any> | null = null;
-function getRuntime() {
-  if (!runtimeP) {
-    runtimeP = (async () => {
-      const connection = new CdnDuckDB({ name: "duckdb" });
-      await connection.connecting;
-      // The model reads Hugging Face over https, so this is normally empty;
-      // kept for any project-relative table a model may add.
-      const db = (connection as any).database;
-      await Promise.all(
-        Object.entries(TABLE_FILES).map(async ([name, href]) => {
-          const r = await fetch(new URL(href, document.baseURI).href);
-          if (!r.ok) throw new Error(`fetch ${href} failed: ${r.status}`);
-          await db.registerFileBuffer(name, new Uint8Array(await r.arrayBuffer()));
-        })
-      );
-      return new SingleConnectionRuntime({ connection, urlReader });
-    })();
+const dataP = Promise.all(
+  (SITE.dataFiles as string[]).map(async (url) => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${url}: ${r.status} ${r.statusText}`);
+    return [url, new Uint8Array(await r.arrayBuffer())] as const;
+  })
+).then((files) => {
+  const mb = files.reduce((n, [, b]) => n + b.byteLength, 0) / 1048576;
+  log(`data downloaded (${files.length} parquet files, ${mb.toFixed(1)} MB)`);
+  return files;
+});
+
+const connectionP = (async () => {
+  const connection = new CdnDuckDB({ name: "duckdb" });
+  await connection.connecting;
+  log("DuckDB-WASM started");
+  return connection;
+})();
+
+const modelReady = (async () => {
+  const [def, files, connection] = await Promise.all([modelP, dataP, connectionP]);
+  const db = (connection as any).database;
+  // Registered under the URL itself: the model's SQL reads
+  // read_parquet(['https://…']), and DuckDB-WASM resolves a registered name
+  // before it would ever go to the network.
+  for (const [url, bytes] of files) await db.registerFileBuffer(url, bytes);
+  // Decode the parquet ONCE, into the cfb_games / cfb_drives tables the
+  // model reads — the same setupSQL the local connection runs (from
+  // malloy-config.json). Reading parquet costs ~0.4 s per scan in
+  // DuckDB-WASM even from memory; a table scan takes a few milliseconds,
+  // and the drive model scans its data several times per query.
+  const loadStart = performance.now();
+  const setup = await db.connect();
+  for (const statement of String(SITE.setupSQL || "").split(";").map((s) => s.trim()).filter(Boolean)) {
+    await setup.query(statement);
   }
-  return runtimeP;
-}
+  await setup.close();
+  log(`tables loaded (${ms(loadStart)} ms)`);
+  const runtime = new SingleConnectionRuntime({
+    connection,
+    // The site ships a compiled model; a source fetch means something asked
+    // for a file that isn't in model.json, and should fail loudly.
+    urlReader: {
+      readURL: async (url: URL) => {
+        throw new Error(`unexpected .malloy fetch (${url}) — rebuild model.json with build-site.mjs`);
+      },
+    },
+  });
+  const model = runtime._loadModelFromModelDef(def);
+  log("ready");
+  return model;
+})();
 
-// One compiled model per dashboard file, shared by every query it runs.
-const models = new Map<string, any>();
-const modelFor = (runtime: any, entryFile: string) => {
-  if (!models.has(entryFile)) models.set(entryFile, runtime.loadModel(new URL(`file:///${entryFile}`)));
-  return models.get(entryFile);
-};
+// For measuring from the console: await cfbDebug.model, then time
+// .loadQuery(text).getSQL() (compile) against (await cfbDebug.connection).runSQL(sql) (DuckDB).
+(window as any).cfbDebug = { model: modelReady, connection: connectionP };
 
-// Match `dashboard dev` and the bundled pages exactly: without an explicit
-// limit Malloy truncates results to a much smaller default.
+// ── queries ─────────────────────────────────────────────────────────
+
+// Match `dashboard dev` and the bundled pages: without an explicit limit
+// Malloy truncates results to a much smaller default.
 const ROW_LIMIT = 5000;
+const NAMED = /^\s*(?:run\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*$/;
 const asRun = (t: string) => (/^\s*run\s*:/.test(t) ? t : `run: ${t}`);
 
-async function run(entryFile: string, req: { query?: string; malloy?: string }, givens: Record<string, unknown>) {
+async function execute(text: string, named: RegExpExecArray | null, givens: Record<string, unknown>, asked: number) {
+  const started = performance.now();
   try {
-    const runtime = await getRuntime();
-    const text = req.malloy != null ? asRun(req.malloy) : asRun(req.query as string);
-    const result = await modelFor(runtime, entryFile).loadQuery(text).run({ rowLimit: ROW_LIMIT, givens: givens ?? {} });
+    const model = await modelReady;
+    const waited = Math.round(started - asked) + ms(started);
+    const ranAt = performance.now();
+    // A named query needs no parsing at all; anything else is compiled here
+    // against the loaded model — a few lines, not the whole model.
+    const query = named ? model.loadQueryByName(named[1]) : model.loadQuery(asRun(text));
+    const result = await query.run({ rowLimit: ROW_LIMIT, givens: givens ?? {} });
+    const label = named ? named[1] : text.replace(/\s+/g, " ").slice(0, 60);
+    console.info(`[cfb] ${label}: ${result.data.rowCount} rows in ${ms(ranAt)} ms` + (waited > 5 ? ` (waited ${waited} ms for startup or earlier queries)` : ""));
     return { ok: true, rows: jsonRows(result), stable_result: API.util.wrapResult(result) };
   } catch (e: unknown) {
     return { ok: false, problems: [{ message: e instanceof Error ? e.message : String(e) }] };
   }
+}
+
+// ONE query at a time, content first. DuckDB-WASM runs a single query at a
+// time anyway, so the only choice is the ORDER — and a frame asks for its
+// picker lists (the *_suggest queries) the moment it mounts, ahead of the
+// drive charts it asks for once the games list is back. Left in arrival
+// order, every page of drive charts waited behind four menus nobody had
+// opened yet.
+const waiting: { low: boolean; go: () => void }[] = [];
+let busy = false;
+function pump() {
+  if (busy || !waiting.length) return;
+  const i = waiting.findIndex((w) => !w.low);
+  const [job] = waiting.splice(i >= 0 ? i : 0, 1);
+  busy = true;
+  job.go();
+}
+function schedule<T>(low: boolean, task: () => Promise<T>): Promise<T> {
+  return new Promise((resolve) => {
+    waiting.push({
+      low,
+      go: () =>
+        task()
+          .then(resolve)
+          .finally(() => {
+            busy = false;
+            pump();
+          }),
+    });
+    pump();
+  });
+}
+
+// Every answer is kept for the life of the page, keyed by the query and its
+// givens: the data does not change while the page is open, and a picker list
+// or a games list for filters already seen comes back instantly instead of
+// running again. Failures are not kept.
+const answers = new Map<string, Promise<any>>();
+const MAX_ANSWERS = 400;
+
+function run(req: { query?: string; malloy?: string }, givens: Record<string, unknown>) {
+  const text = (req.malloy ?? req.query ?? "") as string;
+  const key = JSON.stringify([text, givens ?? {}]);
+  let answer = answers.get(key);
+  if (!answer) {
+    const named = NAMED.exec(text);
+    const low = !!named && /_suggest$/.test(named[1]);
+    const asked = performance.now();
+    answer = schedule(low, () => execute(text, named, givens, asked));
+    answers.set(key, answer);
+    answer.then((res) => {
+      if (!res.ok) answers.delete(key);
+    });
+    if (answers.size > MAX_ANSWERS) answers.delete(answers.keys().next().value);
+  }
+  return answer;
 }
 
 // ── status pill in the nav ──────────────────────────────────────────
@@ -108,23 +209,24 @@ let inFlight = 0;
 function paintStatus(failed?: string) {
   statusEl.className = "status" + (failed ? " failed" : ready && !inFlight ? " ready" : "");
   statusEl.lastChild!.textContent = failed
-    ? "DuckDB failed to start"
+    ? "Failed to start"
     : !ready
-      ? "Starting DuckDB…"
+      ? "Loading data…"
       : inFlight
         ? "Running query…"
-        : "DuckDB ready";
+        : "Ready";
   if (failed) statusEl.title = failed;
 }
 paintStatus();
-// Start the database now, not on the first query: by the time the first
-// dashboard has mounted and asked for data, most of the startup is done.
-getRuntime().then(
+modelReady.then(
   () => {
     ready = true;
     paintStatus();
   },
-  (e) => paintStatus(String(e))
+  (e) => {
+    console.error("[cfb] startup failed", e);
+    paintStatus(String(e?.message ?? e));
+  }
 );
 
 // ── views ───────────────────────────────────────────────────────────
@@ -141,9 +243,6 @@ const home = document.getElementById("home")!;
 const views = new Map<string, View>();
 let current = "";
 
-// The directory the site is served from — "/" locally, "/<repo>/" on GitHub Pages.
-const siteBase = new URL("./", location.href);
-
 /** Which dashboard a URL names: its file name, or "" for the home page. */
 function routeOf(url: Location | URL) {
   const file = decodeURIComponent(url.pathname.slice(siteBase.pathname.length)).replace(/\.html$/, "");
@@ -152,12 +251,12 @@ function routeOf(url: Location | URL) {
 
 const searchOf = (v?: View) => (v ? shareSearch({ givens: v.givens, urlState: v.urlState }) : "");
 const urlFor = (name: string, search: string) =>
-  name ? new URL(`${name}.html${search}`, siteBase).pathname + search.replace(/^[^?]*/, "") : siteBase.pathname;
+  (name ? new URL(`${encodeURIComponent(name)}.html`, siteBase).pathname : siteBase.pathname) + search;
 
 function createView(name: string, search: string): View {
   const frame = document.createElement("iframe");
   frame.title = byName.get(name)!.title;
-  frame.src = new URL(`frames/${name}.html${search}`, siteBase).href;
+  frame.src = new URL(`frames/${encodeURIComponent(name)}.html${search}`, siteBase).href;
   stage.appendChild(frame);
   const v = { name, frame, givens: givensFromSearch(search), urlState: urlStateFromSearch(search) };
   views.set(name, v);
@@ -209,8 +308,7 @@ document.addEventListener("click", (e) => {
 // alive it comes back as it was left, and the address bar is corrected to
 // that state; if not, it starts from the URL.
 window.addEventListener("popstate", () => {
-  const name = routeOf(location);
-  show(name, location.search);
+  show(routeOf(location), location.search);
   syncAddressBar();
 });
 
@@ -223,7 +321,7 @@ window.addEventListener("message", async (e) => {
   if (m.type === "run") {
     inFlight++;
     paintStatus();
-    const res = await run(byName.get(v.name)!.entryFile, { query: m.query, malloy: m.malloy }, m.givens);
+    const res = await run({ query: m.query, malloy: m.malloy }, m.givens);
     inFlight--;
     paintStatus();
     const reply = { type: "result", id: m.id, ...res };

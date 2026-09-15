@@ -1,1 +1,8 @@
-{ "connections": { "duckdb": { "is": "duckdb" } } }
+{
+  "connections": {
+    "duckdb": {
+      "is": "duckdb",
+      "setupSQL": "CREATE OR REPLACE TABLE cfb_games AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_drives AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'], union_by_name = true)"
+    }
+  }
+}

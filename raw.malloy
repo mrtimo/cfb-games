@@ -1,33 +1,35 @@
 // =====================================================================
-//  RAW — the CFBD game and drive feeds, both seasons, straight from
-//  Hugging Face (huggingface.co/datasets/24601p/cfb-data).
+//  RAW — the CFBD game and drive feeds, both seasons, from Hugging Face
+//  (huggingface.co/datasets/24601p/cfb-data)
 //
-//  Read over https rather than from a local copy, so the published site
-//  picks up each pipeline upload (cfbd_pipeline.py --upload) without a
-//  rebuild: the 2026 files grow every week of the season.
+//  The model reads two DuckDB TABLES, cfb_games and cfb_drives, not the
+//  parquet files. The tables are created when the connection opens, from
+//  the setupSQL in malloy-config.json: one read_parquet over every season's
+//  file at Hugging Face, stacked.
 //
-//  Every season lives in its own file with an identical schema;
-//  read_parquet's list form stacks them. Add a season by adding a URL.
-//  Game ids and drive ids are unique across seasons (checked: no overlap
-//  between 2025 and 2026), so the window functions downstream, which
-//  partition by GameId, never mix two seasons.
+//    * locally (malloyyo dashboard dev / lint, build-site.mjs) the native
+//      DuckDB connection runs that setupSQL itself;
+//    * on the published site, spa/shell.ts downloads the same files, then
+//      runs the same setupSQL in DuckDB-WASM (build-site.mjs hands it over).
+//
+//  WHY TABLES. Decoding parquet costs about 0.4 s per scan in DuckDB-WASM,
+//  even with the file already in memory, and the drive model scans its
+//  data several times per query. A scan of the loaded table takes a few
+//  milliseconds. The data is still read fresh from Hugging Face on every
+//  page load and every new connection, so each pipeline upload
+//  (cfbd_pipeline.py --upload) shows up without a rebuild.
+//
+//  Add a season by adding its URLs to the setupSQL. Game ids and drive ids
+//  are unique across seasons (checked: no overlap between 2025 and 2026),
+//  so the window functions downstream, which partition by GameId, never
+//  mix two seasons.
 // =====================================================================
 
 #(doc) Every game of every season in the feed, one row per game, exactly as CFBD publishes it.
-source: games_raw is duckdb.sql("""
-  SELECT * FROM read_parquet([
-    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet',
-    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'
-  ], union_by_name = true)
-""")
+source: games_raw is duckdb.table('cfb_games')
 
 #(doc) Every drive of every season in the feed, one row per possession, exactly as CFBD publishes it.
-source: drives_raw is duckdb.sql("""
-  SELECT * FROM read_parquet([
-    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet',
-    'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'
-  ], union_by_name = true)
-""")
+source: drives_raw is duckdb.table('cfb_drives')
 
 // ---------------------------------------------------------------------
 //  TEAM-GAMES — each game twice, once from each team's side.
@@ -41,20 +43,14 @@ source: drives_raw is duckdb.sql("""
 
 #(doc) One row per team per game: every game appears twice, once from the home team's side and once from the away team's.
 source: team_games_raw is duckdb.sql("""
-  WITH g AS (
-    SELECT * FROM read_parquet([
-      'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet',
-      'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'
-    ], union_by_name = true)
-  ),
-  sides AS (
+  WITH sides AS (
     SELECT Id AS game_id, Season AS season, "Week" AS week_number, SeasonType AS season_type,
       StartDate AS start_date, Completed AS completed, ConferenceGame AS conference_game,
       TRUE AS is_home, HomeTeam AS team, HomeConference AS conference, HomeClassification AS classification,
       AwayTeam AS opponent, AwayConference AS opponent_conference, AwayClassification AS opponent_classification,
       HomePoints AS points_for, AwayPoints AS points_against,
       HomePregameElo AS pregame_elo, HomePostgameElo AS postgame_elo, AwayPregameElo AS opponent_pregame_elo
-    FROM g
+    FROM cfb_games
     UNION ALL
     SELECT Id, Season, "Week", SeasonType,
       StartDate, Completed, ConferenceGame,
@@ -62,7 +58,7 @@ source: team_games_raw is duckdb.sql("""
       HomeTeam, HomeConference, HomeClassification,
       AwayPoints, HomePoints,
       AwayPregameElo, AwayPostgameElo, HomePregameElo
-    FROM g
+    FROM cfb_games
   )
   SELECT *,
     CAST(game_id AS VARCHAR) || '|' || team AS team_game_id,

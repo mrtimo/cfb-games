@@ -1,36 +1,47 @@
 // =====================================================================
-//  Build the published site into docs/ — a single-page app.
+//  Build the published site into docs/ — a single-page app with the
+//  Malloy model compiled ahead of time.
 //
 //    node build-site.mjs
 //
 //  `malloyyo dashboard bundle` alone emits one self-contained page per
-//  dashboard, each booting its own DuckDB. This script keeps everything
-//  malloyyo knows how to do and changes only how the pages are put
-//  together:
+//  dashboard, each booting its own DuckDB and compiling the model from
+//  source in the browser. This script keeps what malloyyo knows how to do
+//  and changes how the site is assembled:
 //
 //    1. sync-components.mjs     regenerate the games report components
 //    2. malloyyo dashboard bundle (into .build/) — discovers the
-//       dashboards, introspects their givens, inlines the model files.
-//       Its HTML is read for that metadata and then discarded.
-//    3. esbuild, with malloyyo's own runtime sources and dependencies:
+//       dashboards and introspects their givens. Its HTML is read for that
+//       metadata and then discarded.
+//    3. COMPILE THE MODEL HERE, in Node, against native DuckDB (which reads
+//       the parquet schemas): one entry that imports every dashboard, saved
+//       as assets/model.json. In the browser the compiler is 20-30x slower,
+//       and compiling the model there was most of the page's load time.
+//       Before anything is written, every query the site runs is compiled
+//       both ways — from source and from model.json — and the SQL must match.
+//    4. esbuild, with malloyyo's own runtime sources and dependencies:
 //         assets/shell.js          spa/shell.ts — DuckDB + Malloy, routing
 //         assets/frames/<name>.js  each dashboard component + spa/frame-boot.ts
-//    4. pages:
+//       The frames never render with Malloy's renderer or Vega (every
+//       dashboard here draws itself), so both are stubbed out of them.
+//    5. pages:
 //         index.html, <name>.html  the shell (identical; the file name routes)
 //         frames/<name>.html       one dashboard, loaded by the shell in an iframe
 //
-//  DuckDB-WASM comes from the jsDelivr CDN; nothing binary is copied.
+//  Rebuild whenever a .malloy file or a parquet SCHEMA changes. New rows in
+//  the parquet need no rebuild: the page reads the data from Hugging Face.
 //
-//  The runtime and its dependencies are taken from the installed malloyyo
-//  CLI (npm i -g @malloydata/malloyyo), so the site is always built against
-//  the same runtime `malloyyo dashboard dev` previews with.
+//  DuckDB-WASM comes from the jsDelivr CDN; nothing binary is copied. The
+//  runtime, compiler and dependencies are the installed malloyyo CLI's
+//  (npm i -g @malloydata/malloyyo), so model.json is always read by the same
+//  Malloy version that wrote it.
 // =====================================================================
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, "docs");
@@ -44,7 +55,15 @@ const dist = path.join(pkgRoot, "dist");
 const nodeModules = path.join(pkgRoot, "node_modules");
 const requireFromMalloyyo = createRequire(path.join(pkgRoot, "package.json"));
 const esbuild = requireFromMalloyyo("esbuild");
+const { Runtime } = requireFromMalloyyo("@malloydata/malloy");
+const { DuckDBConnection } = requireFromMalloyyo("@malloydata/db-duckdb");
 const runtimeIndex = path.join(dist, "frame-runtime", "index.ts");
+
+// The connection's setupSQL creates the cfb_games / cfb_drives tables the
+// model reads (see raw.malloy). The same SQL runs here for the compile and
+// in the page after it downloads the files — one definition of the data.
+const config = JSON.parse(fs.readFileSync(path.join(here, "malloy-config.json"), "utf8"));
+const setupSQL = config.connections?.duckdb?.setupSQL ?? "";
 if (!fs.existsSync(runtimeIndex)) throw new Error(`malloyyo runtime not found at ${runtimeIndex}`);
 
 const run = (cmd, args) => execFileSync(cmd, args, { cwd: here, stdio: "inherit" });
@@ -71,8 +90,83 @@ const dashboards = [...new Set(order)].map((name) => {
   return { name, info, givens, tsx };
 });
 if (!dashboards.length) throw new Error("no dashboards found in the malloyyo bundle");
+const siteCss = fs.readFileSync(path.join(stageDir, "assets", "site.css"), "utf8");
+fs.rmSync(stageDir, { recursive: true, force: true });
 
-// ---- 3: esbuild --------------------------------------------------------
+// ---- 3: compile the model ahead of time ----------------------------------
+
+// The ad-hoc query the games reports send for a page of drive charts, in the
+// shape the component writes it — checked below like every named query.
+const DRIVE_BATCH_QUERY = "run: drives -> game_drive_chart + { where: GameId ~ f'401752677, 401754512' }";
+
+/** The givens a dashboard opens with: its artifact's values, else the declarations' defaults. */
+function openingGivens(d) {
+  const g = {};
+  for (const spec of d.givens) {
+    let v = d.info.givens?.[spec.name] ?? spec.default;
+    if (spec.type === "boolean") v = v === true || v === "true";
+    if (v !== undefined && v !== "") g[spec.name] = v;
+  }
+  return g;
+}
+
+async function compileModel() {
+  // One entry importing every dashboard file, so the site ships ONE model:
+  // the shared sources are the bulk of it, and each dashboard alone would
+  // repeat them. Query names are unique across the dashboard files for this.
+  const entry = pathToFileURL(path.join(here, "__site_model__.malloy"));
+  const entrySource =
+    ["##! experimental { givens }", 'import "index.malloy"', 'import "givens.malloy"', 'import "drive-games.malloy"', ...dashboards.map((d) => `import "${d.info.entryFile}"`)].join("\n") + "\n";
+
+  const connection = new DuckDBConnection({ name: "duckdb", workingDirectory: here, setupSQL });
+  const runtime = new Runtime({
+    urlReader: {
+      readURL: async (url) => (url.toString() === entry.href ? entrySource : fs.readFileSync(fileURLToPath(url), "utf8")),
+    },
+    connections: { lookupConnection: async () => connection },
+  });
+
+  let t = Date.now();
+  const modelDef = (await runtime.loadModel(entry).getModel())._modelDef;
+  const json = JSON.stringify(modelDef);
+  console.log(`\n  model compiled in ${Date.now() - t} ms — ${(json.length / 1048576).toFixed(1)} MB`);
+
+  // Every query the site runs, compiled from its own dashboard file and from
+  // the saved definition. Any difference means model.json would run
+  // something other than what the dashboard says.
+  t = Date.now();
+  const saved = runtime._loadModelFromModelDef(JSON.parse(json));
+  const checks = new Map();
+  for (const d of dashboards) {
+    const own = runtime.loadModel(pathToFileURL(path.join(here, d.info.entryFile)));
+    const givens = openingGivens(d);
+    const names = [d.info.query, ...d.givens.map((s) => s.suggest?.query).filter(Boolean)];
+    for (const name of names) {
+      if (!checks.has(name)) checks.set(name, [own.loadQueryByName(name), saved.loadQueryByName(name), givens]);
+    }
+    // DRIVE_GAMES isn't in the dashboard's given list (its main query never
+    // touches drives), so find the reports that send drive batches by import.
+    const sendsDriveBatches = fs.readFileSync(path.join(here, d.info.entryFile), "utf8").includes("drive-games.malloy");
+    if (!checks.has(DRIVE_BATCH_QUERY) && sendsDriveBatches) {
+      checks.set(DRIVE_BATCH_QUERY, [own.loadQuery(DRIVE_BATCH_QUERY), saved.loadQuery(DRIVE_BATCH_QUERY), { DRIVE_GAMES: "401752677, 401754512" }]);
+    }
+  }
+  for (const [name, [fromSource, fromSaved, givens]] of checks) {
+    const [a, b] = await Promise.all([fromSource.getSQL({ givens }), fromSaved.getSQL({ givens })]);
+    if (a !== b) throw new Error(`model.json compiles ${name} to different SQL than its dashboard file does`);
+  }
+  console.log(`  verified ${checks.size} queries against model.json in ${Date.now() - t} ms`);
+  return json;
+}
+
+const modelJson = await compileModel();
+
+// The parquet the setupSQL reads over https: the page downloads each whole,
+// registers it under its URL, then runs the setupSQL against those bytes.
+const dataFiles = [...new Set(setupSQL.match(/https:\/\/[^'"\s]+\.parquet/g) || [])];
+if (!dataFiles.length) throw new Error("no parquet URLs found in malloy-config.json's setupSQL");
+
+// ---- 4: esbuild --------------------------------------------------------
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, "assets", "frames"), { recursive: true });
 fs.mkdirSync(path.join(out, "frames"), { recursive: true });
@@ -89,6 +183,27 @@ const resolvePlugin = {
     b.onResolve({ filter: /^react(-dom)?($|\/)/ }, (args) =>
       HOST_LIBS.includes(args.path) ? { path: requireFromMalloyyo.resolve(args.path) } : undefined
     );
+  },
+};
+
+// Malloy's renderer (for tag-only dashboards) and Vega (for <VegaChart>) are
+// imported by the runtime but used by none of these dashboards — together
+// they were most of every frame's JavaScript. Any use fails loudly.
+const unused = (what) => `throw new Error("${what} is not bundled into this site — see build-site.mjs")`;
+const lazyFail = (what) => `new Proxy(function () {}, { get() { ${unused(what)} }, apply() { ${unused(what)} }, construct() { ${unused(what)} } })`;
+const STUBS = {
+  "@malloydata/render": `export const MalloyRenderer = ${lazyFail("Malloy's renderer")};`,
+  // loader() is the exception: the runtime calls it once at import time to
+  // build a network-blocking loader, so it must hand back a plain object.
+  vega: `const v = ${lazyFail("Vega")}; export const parse = v, View = v; export const loader = () => ({});`,
+  "vega-lite": `export const compile = ${lazyFail("Vega-Lite")};`,
+  "vega-interpreter": `export const expressionInterpreter = ${lazyFail("Vega")};`,
+};
+const stubPlugin = {
+  name: "stub-unused-renderers",
+  setup(b) {
+    b.onResolve({ filter: /^(@malloydata\/render|vega|vega-lite|vega-interpreter)$/ }, (args) => ({ path: args.path, namespace: "stub" }));
+    b.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({ contents: STUBS[args.path], loader: "js" }));
   },
 };
 
@@ -132,6 +247,7 @@ await esbuild.build({
         });
       },
     },
+    stubPlugin,
     resolvePlugin,
   ],
 });
@@ -143,10 +259,10 @@ await esbuild.build({
   plugins: [resolvePlugin],
 });
 
-fs.copyFileSync(path.join(stageDir, "assets", "model-files.js"), path.join(out, "assets", "model-files.js"));
-fs.copyFileSync(path.join(stageDir, "assets", "site.css"), path.join(out, "assets", "site.css"));
+fs.writeFileSync(path.join(out, "assets", "model.json"), modelJson);
+fs.writeFileSync(path.join(out, "assets", "site.css"), siteCss);
 
-// ---- 4: pages ------------------------------------------------------------
+// ---- 5: pages ------------------------------------------------------------
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const safeJson = (v) => JSON.stringify(v).replace(/</g, "\\u003c");
 const ICON = `<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">`;
@@ -169,12 +285,10 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 
 const site = {
   title: TITLE,
-  dashboards: dashboards.map((d) => ({
-    name: d.name,
-    title: d.info.title || d.name,
-    description: d.info.description || "",
-    entryFile: d.info.entryFile,
-  })),
+  model: "assets/model.json",
+  dataFiles,
+  setupSQL,
+  dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "" })),
 };
 
 const shellHtml = `<!doctype html>
@@ -183,8 +297,12 @@ const shellHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(TITLE)}</title>
-<meta name="description" content="College football games, drive charts and team rankings for the 2025 and 2026 seasons, from a Malloy model running in your browser on DuckDB-WASM.">
+<meta name="description" content="College football games, drive charts and team rankings for the 2025 and 2026 seasons, from a Malloy model queried in your browser with DuckDB-WASM.">
 ${ICON}
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://huggingface.co" crossorigin>
+<link rel="preload" href="./assets/model.json" as="fetch" crossorigin="anonymous">
+<link rel="modulepreload" href="./assets/shell.js">
 <link rel="stylesheet" href="./assets/site.css">
 <style>${SHELL_CSS}</style>
 </head>
@@ -203,7 +321,6 @@ ${ICON}
   .join("")}</ul></main></div>
 </div>
 <script>window.__SITE__ = ${safeJson(site)};</script>
-<script src="./assets/model-files.js"></script>
 <script type="module" src="./assets/shell.js"></script>
 </body>
 </html>
@@ -236,9 +353,16 @@ window.__GIVENS__ = ${safeJson(d.givens)};
 }
 // GitHub Pages would otherwise run the output through Jekyll
 fs.writeFileSync(path.join(out, ".nojekyll"), "");
-fs.rmSync(stageDir, { recursive: true, force: true });
 
 const size = (dir) =>
   fs.readdirSync(dir, { withFileTypes: true }).reduce((n, e) => n + (e.isDirectory() ? size(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size), 0);
+const kb = (f) => `${Math.round(fs.statSync(path.join(out, f)).size / 1024)} KB`;
 console.log(`\n  SPA: ${dashboards.map((d) => d.name).join(", ")}`);
+console.log(`  shell.js ${kb("assets/shell.js")}, model.json ${kb("assets/model.json")}, frame chunk(s) ${fs
+  .readdirSync(path.join(out, "assets", "frames"))
+  .map((f) => kb(`assets/frames/${f}`))
+  .join(" + ")}`);
+console.log(`  data preloaded from ${dataFiles.length} parquet URL(s)`);
 console.log(`  docs/ ${(size(out) / 1048576).toFixed(1)} MB — DuckDB-WASM from the jsDelivr CDN\n`);
+// native DuckDB keeps the event loop alive
+process.exit(0);

@@ -1,6 +1,8 @@
 ##! experimental.access_modifiers
+##! experimental { givens }
 
 import "raw.malloy"
+import "drive-games.malloy"
 
 // =====================================================================
 //  DRIVES — one row per possession, 2025 and 2026 seasons
@@ -80,6 +82,8 @@ import "raw.malloy"
 
 #(doc) Marks each drive as either the copy the feed kept or a redundant synthetic restatement of a possession already present under its real id.
 source: drive_dedupe_context is drives_raw -> {
+  // a no-op unless a drive chart asked for specific games (drive-games.malloy)
+  where: GameId ~ $DRIVE_GAMES
   group_by:
     #(doc) Identifier of the drive this verdict describes.
     drive_id is Id
@@ -104,7 +108,9 @@ source: drive_dedupe_context is drives_raw -> {
 #(doc) The drive feed with the redundant copies removed. Everything downstream reads this rather than the raw table, so no query has to remember to filter them.
 source: drives_deduped is drives_raw extend {
   join_one: dedupe is drive_dedupe_context on Id = dedupe.drive_id
-  where: not dedupe.is_redundant_copy
+  // Narrow to the requested games (if any) HERE, ahead of the possession and
+  // scoreboard window passes below, which all partition by game.
+  where: GameId ~ $DRIVE_GAMES and not dedupe.is_redundant_copy
 }
 
 #(doc) Possession counts for each drive: how many possessions are left in the game, how many the team with the ball has left, and how many are left in the current half. Used to decide whether a game is still within reach.

@@ -15,10 +15,15 @@
 
 import "../index.malloy"
 import "../givens.malloy"
+// in scope so the component's drive-chart batches can set it
+import "../drive-games.malloy"
 
 #" Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.
 # artifact { title="2025 Games" givens { SEASON='2025' } }
-query: games_list is games -> {
+// Named for its season, not generically: build-site.mjs compiles every
+// dashboard into ONE model for the published site, so query names must be
+// unique across dashboards. The component reads the name from the artifact.
+query: games_2025 is games -> {
   where:
     Season = 2025,
     // pinned above; referenced so the pickers' suggest queries narrow to
@@ -82,13 +87,4 @@ query: games_list is games -> {
     thrill_stakes
 
   order_by: start_date, game_id
-}
-
-#" Every possession of every game the selected team played this season, for its drive charts.
-query: team_game_drives is drives -> game_drive_chart + {
-  where:
-    game.Season = 2025,
-    season_label ~ $SEASON,
-    Offense ~ $TEAM or Defense ~ $TEAM,
-    game.week_label ~ $GAME_WEEK
 }
