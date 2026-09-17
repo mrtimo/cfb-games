@@ -702,6 +702,21 @@ extend {
       pick 100 - chart_end_yards_to_goal when IsHomeOffense
       else chart_end_yards_to_goal
 
+    #|(doc)
+      Field stripe a return touchdown started from, in absolute field coordinates.
+
+      On a KICKOFF return the feed gives the return's length in Yards (100 for BYU's
+      second-half return against Utah Tech in 2026), and the returning team is this row's
+      Defense, so the return is drawn its true length back from the goal line it reached.
+      A punt or blocked-kick return has no return yardage anywhere in the feed — only the
+      possession that preceded it — so it starts where that possession ended, which is a
+      floor on the return, not its real length.
+    |#
+    chart_return_start_yardline is
+      pick least(greatest(Yards, 0), 100) when is_kickoff_return_touchdown and IsHomeOffense
+      pick 100 - least(greatest(Yards, 0), 100) when is_kickoff_return_touchdown
+      else chart_end_yardline
+
     #(doc) Direction the offense was moving on the field chart: up toward 100 for the home team, down toward 0 for the away team.
     chart_direction is
       pick 'up' when IsHomeOffense

@@ -91,6 +91,7 @@ source: drives is drives_base extend {
       // attacks, 100 = the goal line the home team attacks
       start_yardline is chart_start_yardline
       end_yardline is chart_end_yardline
+      return_start_yardline is chart_return_start_yardline
       start_field_position
       end_field_position
       plays is Plays

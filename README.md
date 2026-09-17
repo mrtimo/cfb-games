@@ -49,9 +49,10 @@ on the chart as the dashed change-of-possession path. Checked across both season
 
 ## Special teams touchdowns
 
-The feed has no field for them, so `drives.malloy` reads them off the shape of the row, and the
-chart draws them as a **dotted** line to the scoring team's end zone, a step right of the
-possession (`ST TD`):
+The feed has no field for them, so `drives.malloy` reads them off the shape of the row. The chart
+draws one as a **dotted** line to the scoring team's end zone, a step right of the possession and
+labelled `TD` — the dotted pattern is what says special teams (a defensive takeaway returned for a
+score is dashed):
 
 - **Kickoff return** — filed under the KICKING team as a one-play "drive" of 85+ yards, scoring,
   whose own score never moves. Utah Tech at BYU in 2026 opens the second half with "Utah Tech,
@@ -61,6 +62,12 @@ possession (`ST TD`):
   short possession the feed calls a TD that ends back on the offense's own goal line (Minnesota's
   two against Eastern Illinois in 2026). 181.
 - **Blocked kick return** — `MISSED FG TD`, or a kick whose defense scored. 19.
+
+**How long the return line is** (`chart_return_start_yardline`): a kickoff return is drawn its true
+length, because the feed puts the return's yardage in `Yards` — BYU's is 100, so it runs goal line
+to goal line, and all 51 draw exactly their feed yardage. A punt or blocked-kick return has no
+return yardage anywhere in the feed, only the possession before it, so it starts where that
+possession ended; the tooltip says so rather than implying a length.
 
 Counts are from the model's guarded `defensive_points_scored`, which only believes a defensive
 score the next drive's scoreboard corroborates, so they run below the raw row counts (296 punt

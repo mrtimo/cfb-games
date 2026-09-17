@@ -110,7 +110,8 @@ const gameTags = (awayTeam: string, homeTeam: string): [string, string] => {
 const driveColor = (d: any) => {
   if (d.result_category === "Touchdown") return NAVY;
   if (d.result_category === "Field goal") return BLUE;
-  // a possession that ended behind where it started
+  // a giveaway, or a possession that ended behind where it started
+  if (d.result_category === "Interception" || d.result_category === "Fumble") return ORANGE;
   if (Number(d.yards) < 0) return ORANGE;
   return GREY;
 };
@@ -244,7 +245,11 @@ export function DriveChart({
       else if (startsHalf) kicker = cur.defense;
 
       const x = xFor(i);
-      const startY = yFor(Number(cur.start_yardline));
+      // a kickoff ends where the return began, which on a return touchdown is
+      // the length of the return back from the goal line
+      const startY = yFor(
+        Number(cur.is_kickoff_return_touchdown ? cur.return_start_yardline ?? cur.start_yardline : cur.start_yardline)
+      );
 
       if (!prev) {
         if (!kicker) continue;
@@ -378,8 +383,10 @@ export function DriveChart({
           const defensiveTd = !specialTeams && Number(d.defensive_points_scored) >= 6;
           const returnTd = specialTeams || defensiveTd;
           const returnY = yFor(d.is_home_offense ? 0 : 100);
-          // a kickoff return starts where the ball was kicked from
-          const returnFromY = kickoffReturn ? y1 : y2;
+          // A kickoff return is drawn its true length — the feed gives it. A punt
+          // or blocked-kick return has no length in the feed, so it starts where
+          // the possession ended (see chart_return_start_yardline).
+          const returnFromY = yFor(Number(d.return_start_yardline ?? (kickoffReturn ? d.start_yardline : d.end_yardline)));
           // The possession keeps ITS own result. On a punt return the drive
           // still ended in a punt, so labelling it "ST TD" — the category the
           // return earned it — put the same words on both lines.
@@ -433,7 +440,7 @@ export function DriveChart({
                     strokeWidth={2.5}
                     paintOrder="stroke"
                   >
-                    {specialTeams ? "ST TD" : "TD"}
+                    TD
                   </text>
                 </g>
               )}
@@ -546,18 +553,27 @@ export function DriveChart({
           }}
         >
           <div style={{ fontWeight: 700, marginBottom: 2 }}>
-            {hover.d.offense} · possession {hover.d.drive_number}
+            {hover.d.is_kickoff_return_touchdown
+              ? `${hover.d.defense} · kickoff return`
+              : `${hover.d.offense} · possession ${hover.d.drive_number}`}
           </div>
-          <div style={{ color: MUTED }}>
-            {hover.d.quarter_label} quarter · started own {hover.d.start_field_position}
-          </div>
+          {!hover.d.is_kickoff_return_touchdown && (
+            <div style={{ color: MUTED }}>
+              {hover.d.quarter_label} quarter · started own {hover.d.start_field_position}
+            </div>
+          )}
           <div>
-            {hover.d.plays} play{Number(hover.d.plays) === 1 ? "" : "s"}, {hover.d.yards} yards
+            {hover.d.is_kickoff_return_touchdown
+              ? `${hover.d.yards} yards, returned for a touchdown`
+              : `${hover.d.plays} play${Number(hover.d.plays) === 1 ? "" : "s"}, ${hover.d.yards} yards`}
           </div>
           <div style={{ color: driveColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
           {hover.d.is_special_teams_touchdown ? (
             <div style={{ color: NAVY }}>
               {hover.d.special_teams_score_type} touchdown — {hover.d.defense}
+              {!hover.d.is_kickoff_return_touchdown && (
+                <span style={{ color: MUTED }}> · return length not in the feed</span>
+              )}
             </div>
           ) : (
             Number(hover.d.defensive_points_scored) > 0 && (

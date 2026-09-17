@@ -300,8 +300,8 @@ function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: stri
 const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
   { color: NAVY, label: "Touchdown" },
   { color: BLUE, label: "Field goal" },
-  { color: ORANGE, label: "Drive lost yardage" },
-  { color: GREY, label: "Punt, turnover or clock" },
+  { color: ORANGE, label: "Turnover, or drive lost yardage" },
+  { color: GREY, label: "Punt or clock" },
   { color: NAVY, dash: true, label: "Defensive touchdown" },
   { color: NAVY, dot: true, label: "Special teams touchdown (kickoff, punt, blocked kick)" },
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
