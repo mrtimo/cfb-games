@@ -8,7 +8,7 @@
 //  the result: the sort order, paging, and the drive charts.
 //
 //  View-state lives in the URL next to the givens, so a sorted, filtered
-//  page is a link: ~sort=thrill, ~orient=down.
+//  page is a link: ~sort=thrill, ~orient=down, ~legend=false.
 //
 //  Drive charts are open by default. Their drives are fetched for the
 //  games on screen in ONE query per page of cards — not one per game —
@@ -49,6 +49,9 @@ const pickValues = (v: any) => {
 };
 
 const num = (v: any): number | null => (v == null || v === "" ? null : Number(v));
+
+/** Alabama's → Alabama's, Texas' → Texas'. */
+const possessive = (name: string) => `${name}${/s$/i.test(name) ? "'" : "'s"}`;
 
 /**
  * StartDate is a naive US/Pacific wall-clock time (see games.malloy), so
@@ -267,13 +270,80 @@ function ThrillMeter({ g }: { g: any }) {
   );
 }
 
-function GameCard({ g, drives, drivesError, focusTeam, orient }: {
+/** "See all of TCU's games" — the same place the Team picker would take you. */
+function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: string) => void }) {
+  const teams = [g.away_team, g.home_team].filter((t) => t && !(team && sameTeam(team, t)));
+  if (!teams.length) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 8 }}>
+      {teams.map((t) => (
+        <button
+          key={t}
+          onClick={() => onPick(t)}
+          title={`Show every ${t} game this season`}
+          style={{
+            background: "none", border: 0, padding: 0, cursor: "pointer", textAlign: "left",
+            font: "inherit", fontSize: 11.5, color: "var(--dash-accent, #2a78d6)",
+          }}
+        >
+          See all of {possessive(t)} games →
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---- drive chart legend ---------------------------------------------
+// The chart's own palette (drive-chart.part.tsx), in words. Every mark on
+// the chart also carries a text label, so this is a convenience rather
+// than the only way to read it.
+const LEGEND: { color: string; dash?: boolean; label: string }[] = [
+  { color: NAVY, label: "Touchdown" },
+  { color: BLUE, label: "Field goal" },
+  { color: ORANGE, label: "Drive lost yardage" },
+  { color: GREY, label: "Punt, turnover or clock" },
+  { color: NAVY, dash: true, label: "Defensive touchdown" },
+  { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
+];
+
+function DriveLegend() {
+  return (
+    <div
+      style={{
+        display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 16px",
+        background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 8,
+        padding: "8px 12px", marginTop: 8, color: INK,
+      }}
+    >
+      {LEGEND.map((item) => (
+        <span key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+          <svg width="20" height="10" aria-hidden="true">
+            <line
+              x1="1" y1="5" x2="19" y2="5"
+              stroke={item.color}
+              strokeWidth={item.dash ? 1.5 : 2.5}
+              strokeDasharray={item.dash ? "3 3" : undefined}
+              strokeLinecap="round"
+            />
+          </svg>
+          {item.label}
+        </span>
+      ))}
+      <span style={{ fontSize: 11, color: MUTED }}>
+        Each drive runs from where the offense took over to where the possession ended; the label is the result.
+      </span>
+    </div>
+  );
+}
+
+function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam }: {
   g: any;
   /** This game's drives: undefined while they load, [] when the feed has none. */
   drives?: any[];
   drivesError?: string | null;
   focusTeam?: string;
   orient: DriveOrient;
+  onPickTeam: (t: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const chartable = canChart(g);
@@ -304,13 +374,14 @@ function GameCard({ g, drives, drivesError, focusTeam, orient }: {
         <span style={{ display: "flex", gap: 5, flexWrap: "wrap", marginLeft: "auto" }}>{tags}</span>
       </header>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 28px", alignItems: "center" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 28px", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 360px", minWidth: 0 }}>
           <Scoreboard g={g} />
           {g.notes && <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>{g.notes}</div>}
         </div>
         <div style={{ flex: "0 1 210px", minWidth: 150 }}>
           <ThrillMeter g={g} />
+          <TeamLinks g={g} team={focusTeam || ""} onPick={onPickTeam} />
         </div>
       </div>
 
@@ -398,11 +469,36 @@ export default function Dashboard({ dashboard, givens }: any) {
   // the dashboard's own query, named in its # artifact tag
   const list = useQuery({ query: dashboard?.query, givens });
   const teamGiven = useGiven("TEAM");
+  const conferenceGiven = useGiven("CONFERENCE");
+  const weekGiven = useGiven("GAME_WEEK");
+  const divisionGiven = useGiven("DIVISION");
   const team: string = useMemo(() => pickValues(teamGiven.value)[0] || "", [teamGiven.value]);
+  const conference: string = useMemo(() => pickValues(conferenceGiven.value)[0] || "", [conferenceGiven.value]);
 
   const [sort, setSort] = useUrlState("sort", "kickoff");
   const [orient, setOrient] = useUrlState("orient", "up");
+  const [legend, setLegend] = useUrlState("legend", true);
   const [shown, setShown] = useState(PAGE_SIZE);
+
+  // Picking a conference drops the team: a team plus somebody else's
+  // conference matches nothing, and the conference is the wider question.
+  const lastConference = useRef(conference);
+  useEffect(() => {
+    if (lastConference.current === conference) return;
+    lastConference.current = conference;
+    if (team) teamGiven.set("");
+  }, [conference, team]);
+
+  // A team link means "show me this team", so it clears the filters that
+  // would hide the rest of that team's season.
+  const pickTeam = (t: string) => {
+    teamGiven.set(filters.oneOf(t));
+    if (conference) conferenceGiven.set("");
+    if (pickValues(weekGiven.value).length) weekGiven.set("");
+    if (pickValues(divisionGiven.value).length) divisionGiven.set("");
+    lastConference.current = "";
+    window.scrollTo({ top: 0 });
+  };
 
   const rows: any[] = list.rows || [];
   const sorted = useMemo(() => sortGames(rows, sort), [rows, sort]);
@@ -464,34 +560,46 @@ export default function Dashboard({ dashboard, givens }: any) {
       </Controls>
 
       {!list.loading && !list.error && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 18px", alignItems: "baseline", margin: "14px 0 2px", fontSize: 13, color: "var(--dash-muted, #6b7280)" }}>
-          <span>
-            <strong style={{ color: "var(--dash-fg, #16181c)" }}>{rows.length.toLocaleString()}</strong> games
-            {" · "}
-            <strong style={{ color: "var(--dash-fg, #16181c)" }}>{played.length.toLocaleString()}</strong> played
-          </span>
-          {record && played.length > 0 && (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 18px", alignItems: "baseline", margin: "14px 0 2px", fontSize: 13, color: "var(--dash-muted, #6b7280)" }}>
             <span>
-              {team} <strong style={{ color: "var(--dash-fg, #16181c)" }}>{record.w}–{record.l}</strong>
+              <strong style={{ color: "var(--dash-fg, #16181c)" }}>{rows.length.toLocaleString()}</strong> games
+              {" · "}
+              <strong style={{ color: "var(--dash-fg, #16181c)" }}>{played.length.toLocaleString()}</strong> played
             </span>
-          )}
-          {avgThrill != null && (
-            <span>
-              average thrill <strong style={{ color: "var(--dash-fg, #16181c)" }}>{avgThrill.toFixed(0)}</strong>
-            </span>
-          )}
-          <details style={{ fontSize: 12 }}>
-            <summary style={{ cursor: "pointer" }}>How the thrill index works</summary>
-            <div style={{ maxWidth: 640, lineHeight: 1.5, marginTop: 4 }}>
-              A 0–100 score from the box score, so every completed game has one. Points for a close
-              final (up to 35, gone at a 28-point margin), a close game entering the fourth quarter
-              (20, gone at 17), a comeback win (10), overtime (15), combined scoring (12, full at 80
-              points), an Elo upset (10, full at a 250-point rating gap) and a playoff game (8), capped
-              at 100. Instant classic at 75+, Thriller 55+, Good game 35+. CFBD's own excitement
-              rating, built from win-probability swings, is shown beside it where CFBD has published one.
-            </div>
-          </details>
-        </div>
+            {record && played.length > 0 && (
+              <span>
+                {team} <strong style={{ color: "var(--dash-fg, #16181c)" }}>{record.w}–{record.l}</strong>
+              </span>
+            )}
+            {avgThrill != null && (
+              <span>
+                average thrill <strong style={{ color: "var(--dash-fg, #16181c)" }}>{avgThrill.toFixed(0)}</strong>
+              </span>
+            )}
+            <details style={{ fontSize: 12 }}>
+              <summary style={{ cursor: "pointer" }}>How the thrill index works</summary>
+              <div style={{ maxWidth: 640, lineHeight: 1.5, marginTop: 4 }}>
+                A 0–100 score from the box score, so every completed game has one. Points for a close
+                final (up to 35, gone at a 28-point margin), a close game entering the fourth quarter
+                (20, gone at 17), a comeback win (10), overtime (15), combined scoring (12, full at 80
+                points), an Elo upset (10, full at a 250-point rating gap) and a playoff game (8), capped
+                at 100. Instant classic at 75+, Thriller 55+, Good game 35+. CFBD's own excitement
+                rating, built from win-probability swings, is shown beside it where CFBD has published one.
+              </div>
+            </details>
+            <button
+              onClick={() => setLegend(!legend)}
+              style={{
+                background: "none", border: 0, padding: 0, cursor: "pointer", font: "inherit",
+                fontSize: 12, color: "var(--dash-accent, #2a78d6)",
+              }}
+            >
+              {legend ? "Hide drive chart legend" : "Show drive chart legend"}
+            </button>
+          </div>
+          {legend && <DriveLegend />}
+        </>
       )}
 
       {list.loading && <div style={{ fontSize: 13, color: MUTED, marginTop: 16 }}>Loading games…</div>}
@@ -510,6 +618,7 @@ export default function Dashboard({ dashboard, givens }: any) {
               drivesError={drivesError}
               focusTeam={team || undefined}
               orient={orient as DriveOrient}
+              onPickTeam={pickTeam}
             />
           ))}
           {sorted.length > shown && (

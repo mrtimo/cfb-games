@@ -7,7 +7,7 @@ on the site without a rebuild.
 
 | Dashboard | What it is |
 |---|---|
-| `games-2025`, `games-2026` | One scoreboard card per game. Filter by team, conference, week and division (all in the URL as `$TEAM`, `$CONFERENCE`, `$GAME_WEEK`, `$DIVISION`); sort by kickoff, thrill index, CFBD excitement, closest finish, most points or biggest upset (`~sort=`). Pick one team and every game opens with its drive chart, with the Up / Down / Default direction control (`~orient=`); otherwise any card's chart opens on click. |
+| `games-2025`, `games-2026` | One scoreboard card per game. Filter by team, conference, week and division (all in the URL as `$TEAM`, `$CONFERENCE`, `$GAME_WEEK`, `$DIVISION`); sort by kickoff, thrill index, CFBD excitement, closest finish, most points or biggest upset (`~sort=`). Every card opens with its drive chart (hide it per card), under a legend that toggles off (`~legend=`); with one team picked, the Up / Down / Default direction control (`~orient=`) points its drives. Each card links to the other team's full season. Picking a conference clears the team, and a team link clears the conference, week and division — either filter alone is what the reader asked for. |
 | `team-rankings` | One wide table of every team — record, points for and allowed, margin, offensive and defensive drive efficiency (points per drive, yards per play, Eckel rate, TD / explosive / three-and-out / turnover rates), Elo and strength of schedule. Click a header to re-rank (`~sort=`, `~dir=`). |
 
 ## Files
@@ -35,6 +35,17 @@ Instant classic ≥ 75, Thriller ≥ 55, Good game ≥ 35.
 Share of drives that scored a touchdown or reached the opponent's 35 after gaining at least
 ten yards. The textbook definition — a first down inside the opponent's 40 — needs
 play-by-play; this is the drive-level stand-in.
+
+## Drive charts: where a drive ends
+
+A drive line is drawn from where the offense took over to **where its possession ended**:
+`chart_end_yards_to_goal` in `drives.malloy` is the starting distance less the drive's net yards,
+not the feed's `EndYardsToGoal`. On a kick or a return the feed records where the BALL came to
+rest — Arizona's 3-play, minus-14-yard possession at BYU in 2026 starts on its own 25 and the feed
+ends it on BYU's 11, which drew a three-and-out as a 64-yard march. About a fifth of punts differ
+by a punt's distance; interceptions differ by their return. The ball's travel afterwards is still
+on the chart as the dashed change-of-possession path. Checked across both seasons: 34,235 of
+34,371 non-touchdown drives now draw exactly their net yards (the rest clamp at a goal line).
 
 ## The published site (`docs/`)
 

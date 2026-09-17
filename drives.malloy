@@ -627,11 +627,28 @@ extend {
     #(doc) Field stripe the drive started on for charting, in absolute field coordinates from 0 to 100, clamped into the field of play.
     chart_start_yardline is least(greatest(StartYardline, 0), 100)
 
-    #(doc) Field stripe the drive ended on for charting, in absolute field coordinates from 0 to 100. Touchdown drives are drawn all the way to the goal line the offense was attacking, and stray values from the raw feed are clamped into the field of play.
+    #|(doc)
+      Distance to the end zone where the OFFENSE's possession actually ended: its starting
+      distance less the net yards it gained, clamped into the field of play.
+
+      Not the feed's EndYardsToGoal, which on a kick or a return is where the BALL came to
+      rest afterwards. A punt is the clearest case: Arizona's 3-play, minus-14-yard
+      possession at BYU in 2026 starts on its own 25 and the feed ends it on BYU's 11, 64
+      yards downfield — the punt. Drawn from the feed the drive reads as a 64-yard march
+      instead of a three-and-out that lost ground. About a fifth of punts differ this way,
+      by a punt's distance (34 to 46 yards), and interceptions differ by their return.
+    |#
+    chart_end_yards_to_goal is least(greatest(StartYardsToGoal - Yards, 0), 100)
+
+    #(doc) Field stripe the drive ended on for charting, in absolute field coordinates from 0 to 100: where the offense's possession ended, not where a punt or return left the ball. Touchdown drives are drawn all the way to the goal line the offense was attacking.
+    // The ball's travel after the possession — the punt, the return — is the
+    // DASHED change-of-possession path to the next drive's starting spot, so
+    // it is still on the chart, drawn as somebody else's yardage.
     chart_end_yardline is
       pick 100 when is_touchdown and IsHomeOffense
       pick 0 when is_touchdown and not IsHomeOffense
-      else least(greatest(EndYardline, 0), 100)
+      pick 100 - chart_end_yards_to_goal when IsHomeOffense
+      else chart_end_yards_to_goal
 
     #(doc) Direction the offense was moving on the field chart: up toward 100 for the home team, down toward 0 for the away team.
     chart_direction is
