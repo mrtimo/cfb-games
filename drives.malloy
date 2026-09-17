@@ -381,6 +381,10 @@ extend {
       // do not, which in this feed is most of the time.
       pick 'Two-point conversion made' when is_overtime_conversion and Scoring
       pick 'Two-point conversion failed' when is_overtime_conversion
+      // ahead of both the defensive and the offensive touchdown: a kickoff
+      // return is filed as the kicking team's own TD, and a punt return as
+      // a plain defensive score
+      pick 'Special teams touchdown' when is_special_teams_touchdown
       pick 'Defensive touchdown' when defensive_points_scored >= 6
       pick 'Safety' when defensive_points_scored = 2
       pick 'End of period' when DriveResult ? 'END OF HALF' | 'END OF GAME' | 'END OF 4TH QUARTER' | 'END OF HALF TD' | 'END OF GAME TD' | 'KICKOFF'
@@ -400,6 +404,7 @@ extend {
       // label wider than its column collides with its neighbour.
       pick '2PT' when result_category = 'Two-point conversion made'
       pick 'Miss' when result_category = 'Two-point conversion failed'
+      pick 'ST TD' when result_category = 'Special teams touchdown'
       pick 'Def TD' when result_category = 'Defensive touchdown'
       // the clock running out on the game reads very differently from it
       // running out on the first half, so name them apart
@@ -435,6 +440,53 @@ extend {
 
     #(doc) True when the drive gave up points to the defense, by return touchdown, blocked kick, or safety.
     is_defensive_score is defensive_points_scored > 0
+
+  // ---- Special teams touchdowns ---------------------------------------
+  //  Points scored by the team WITHOUT the ball, on a kick rather than a
+  //  takeaway. The feed has no field for them, so they are read off the
+  //  shape of the row. Across the two seasons: 51 kickoff returns, 296
+  //  punt returns, 77 blocked kicks returned, no row matching two rules.
+  dimension:
+
+    #|(doc)
+      True when this row is really a kickoff return touchdown. The feed files one under the
+      KICKING team as a one-play "drive" covering nearly the whole field whose own score
+      never moves — Utah Tech at BYU in 2026 opens the second half with "Utah Tech, 1 play,
+      100 yards, TD", which was BYU running the kickoff back. Read as an ordinary touchdown
+      it credits the wrong team, in the wrong direction. The returning team is this row's
+      Defense.
+    |#
+    is_kickoff_return_touchdown is
+      DriveResult = 'TD' and Plays <= 1 and Yards >= 85 and Scoring
+      and EndOffenseScore - StartOffenseScore = 0
+
+    #|(doc)
+      True when the defending team ran a punt back for a touchdown, or blocked one and
+      returned it. Named outright by the feed on some rows (PUNT TD, PUNT RETURN TD); on the
+      rest it is a punt whose DEFENSE gained the points, or a short possession the feed calls
+      a TD that ends back on the offense's own goal line — the returner's end zone.
+    |#
+    is_punt_return_touchdown is
+      (DriveResult ? 'PUNT TD' | 'PUNT RETURN TD')
+      or (DriveResult = 'PUNT' and defensive_points_scored >= 6)
+      or (DriveResult = 'TD' and defensive_points_scored >= 6
+          and Plays <= 4 and Yards < 15 and EndYardsToGoal = 100)
+
+    #(doc) True when the defending team returned a blocked or missed field goal for a touchdown.
+    is_blocked_kick_return_touchdown is
+      DriveResult = 'MISSED FG TD'
+      or ((DriveResult ? 'FG' | 'MISSED FG') and defensive_points_scored >= 6)
+
+    #(doc) True when the touchdown came on special teams — a kickoff return, a punt return, or a blocked kick — rather than from the offense or from a takeaway. The scoring team is this row's Defense.
+    is_special_teams_touchdown is
+      is_kickoff_return_touchdown or is_punt_return_touchdown or is_blocked_kick_return_touchdown
+
+    #(doc) How a special-teams touchdown was scored: Kickoff return, Punt return, or Blocked kick return. Empty on every other drive.
+    special_teams_score_type is
+      pick 'Kickoff return' when is_kickoff_return_touchdown
+      pick 'Punt return' when is_punt_return_touchdown
+      pick 'Blocked kick return' when is_blocked_kick_return_touchdown
+      else null
 
     #(doc) True when the drive ran three plays or fewer and ended in a punt, the classic three-and-out.
     is_three_and_out is Plays <= 3 and DriveResult = 'PUNT'

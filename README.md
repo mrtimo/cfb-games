@@ -47,6 +47,27 @@ by a punt's distance; interceptions differ by their return. The ball's travel af
 on the chart as the dashed change-of-possession path. Checked across both seasons: 34,235 of
 34,371 non-touchdown drives now draw exactly their net yards (the rest clamp at a goal line).
 
+## Special teams touchdowns
+
+The feed has no field for them, so `drives.malloy` reads them off the shape of the row, and the
+chart draws them as a **dotted** line to the scoring team's end zone, a step right of the
+possession (`ST TD`):
+
+- **Kickoff return** — filed under the KICKING team as a one-play "drive" of 85+ yards, scoring,
+  whose own score never moves. Utah Tech at BYU in 2026 opens the second half with "Utah Tech,
+  1 play, 100 yards, TD", which was BYU's return; read literally it credited the wrong team going
+  the wrong way. These rows have no possession, so no solid line is drawn. 51 across both seasons.
+- **Punt return** — `PUNT TD` / `PUNT RETURN TD`, a punt whose defense gained the points, or a
+  short possession the feed calls a TD that ends back on the offense's own goal line (Minnesota's
+  two against Eastern Illinois in 2026). 181.
+- **Blocked kick return** — `MISSED FG TD`, or a kick whose defense scored. 19.
+
+Counts are from the model's guarded `defensive_points_scored`, which only believes a defensive
+score the next drive's scoreboard corroborates, so they run below the raw row counts (296 punt
+returns, 77 blocked kicks) on purpose. A kickoff return no longer counts as an offensive touchdown
+for the kicking team; it credits nobody's `drive_points`, since the feed books those points
+between drives.
+
 ## The published site (`docs/`)
 
 Published on GitHub Pages from `docs/` on `main`: https://mrtimo.github.io/cfb-games/

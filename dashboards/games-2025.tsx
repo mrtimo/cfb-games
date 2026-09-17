@@ -39,6 +39,7 @@ const FIELD_H = 300;
 const FIELD_TOP = 26;
 const LEDGER_TOP_PAD = 16;
 const ROW_H = 21;
+const RETURN_DX = 10;    // a return touchdown sits this far right of the possession
 
 /** Team names as they arrive from two different givens — compare loosely. */
 const sameTeam = (a: string, b: string) =>
@@ -232,15 +233,21 @@ export function DriveChart({
       const prevOffScored = prev ? Number(prev.drive_points) > 0 : false;
       const prevDefTd = prev ? Number(prev.defensive_points_scored) >= 6 : false;
       const prevSafety = prev ? Number(prev.defensive_points_scored) === 2 : false;
-      const prevPutPointsUp = prevOffScored || prevDefTd || prevSafety;
+      const prevSpecialTeams = !!prev && !!prev.is_special_teams_touchdown;
+      const prevPutPointsUp = prevOffScored || prevDefTd || prevSafety || prevSpecialTeams;
 
-      // Who kicks: whoever just scored. On a defensive touchdown that is
-      // the team that was DEFENDING; after a safety it is the team that
-      // was scored upon, which free-kicks. To open a half it is whoever
-      // is about to defend.
+      // Who kicks: whoever just scored. On a defensive or special-teams
+      // touchdown that is the team that was DEFENDING; after a safety it is
+      // the team that was scored upon, which free-kicks. To open a half it
+      // is whoever is about to defend.
+      //
+      // A KICKOFF RETURN row is the exception, because the feed files it
+      // under the KICKING team: its "offense" is the team that kicked and
+      // its "defense" is the team that ran it back.
       let kicker: string | null = null;
-      if (prevOffScored) kicker = prev.offense;
-      else if (prevDefTd) kicker = prev.defense;
+      if (cur.is_kickoff_return_touchdown) kicker = cur.offense;
+      else if (prevOffScored) kicker = prev.offense;
+      else if (prevDefTd || prevSpecialTeams) kicker = prev.defense;
       else if (prevSafety) kicker = prev.offense;
       else if (startsHalf) kicker = cur.defense;
 
@@ -368,34 +375,65 @@ export function DriveChart({
           const y2 = yFor(Number(d.end_yardline));
           const color = driveColor(d);
           const scored = Number(d.drive_points) > 0;
+          // A return touchdown belongs to the OTHER team, so it is drawn as
+          // its own line to the goal line that team was attacking, a step to
+          // the right of the possession rather than on top of it: dotted for
+          // special teams (kickoff, punt, blocked kick), dashed for a defense
+          // that took the ball away. A kickoff return has no possession to
+          // draw at all — the feed's "drive" IS the return.
+          const specialTeams = !!d.is_special_teams_touchdown;
+          const kickoffReturn = !!d.is_kickoff_return_touchdown;
+          const defensiveTd = !specialTeams && Number(d.defensive_points_scored) >= 6;
+          const returnTd = specialTeams || defensiveTd;
+          const returnY = yFor(d.is_home_offense ? 0 : 100);
+          // a kickoff return starts where the ball was kicked from
+          const returnFromY = kickoffReturn ? y1 : y2;
+          // The possession keeps ITS own result. On a punt return the drive
+          // still ended in a punt, so labelling it "ST TD" — the category the
+          // return earned it — put the same words on both lines.
+          const possessionLabel = !specialTeams
+            ? d.result_abbreviation
+            : d.special_teams_score_type === "Punt return"
+              ? "P"
+              : d.special_teams_score_type === "Blocked kick return"
+                ? "FGA"
+                : d.result_abbreviation;
           return (
             // NOT keyed on drive_number: the feed repeats it across overtime
             // possessions in a handful of games, and duplicate keys make React
             // reuse the wrong node. Position in this already-sorted list is
             // stable for as long as the list is.
             <g key={i}>
-              <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
-              <circle cx={x} cy={y1} r={3.2} fill={color} />
-              <circle cx={x} cy={y2} r={4.2} fill={color} />
-              {/* A defensive score keeps going the other way: the
-                  possession ends where it ends, then the ball is carried
-                  to the goal line the DEFENSE was attacking. Dashed, so
-                  it reads as someone else's run, not the offense's. */}
-              {Number(d.defensive_points_scored) >= 6 && (
+              {/* A kickoff return has no possession to draw: the feed's row
+                  IS the return, filed under the kicking team. */}
+              {!kickoffReturn && (
+                <>
+                  <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
+                  <circle cx={x} cy={y1} r={3.2} fill={color} />
+                  <circle cx={x} cy={y2} r={4.2} fill={color} />
+                </>
+              )}
+              {/* The other team's touchdown, carried to the goal line THAT
+                  team was attacking. Drawn a step to the right of the
+                  possession rather than over it, and never solid: dotted for
+                  special teams, dashed for a defense that took the ball away. */}
+              {returnTd && (
                 <g>
                   <line
-                    x1={x}
-                    y1={y2}
-                    x2={x}
-                    y2={yFor(d.is_home_offense ? 0 : 100)}
+                    x1={x + RETURN_DX}
+                    y1={returnFromY}
+                    x2={x + RETURN_DX}
+                    y2={returnY}
                     stroke={NAVY}
                     strokeWidth={2}
-                    strokeDasharray="4 3"
+                    strokeDasharray={specialTeams ? "1 3.5" : "4 3"}
+                    strokeLinecap={specialTeams ? "round" : "butt"}
                   />
-                  <circle cx={x} cy={yFor(d.is_home_offense ? 0 : 100)} r={4.2} fill={NAVY} />
+                  <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
+                  <circle cx={x + RETURN_DX} cy={returnY} r={4.2} fill={NAVY} />
                   <text
-                    x={x + 7}
-                    y={yFor(d.is_home_offense ? 0 : 100) + 3.5}
+                    x={x + RETURN_DX + 6}
+                    y={returnY + 3.5}
                     fontSize={9}
                     fontWeight={700}
                     fill={NAVY}
@@ -403,22 +441,24 @@ export function DriveChart({
                     strokeWidth={2.5}
                     paintOrder="stroke"
                   >
-                    TD
+                    {specialTeams ? "ST TD" : "TD"}
                   </text>
                 </g>
               )}
-              <text
-                x={x + 7}
-                y={y2 + 3.5}
-                fontSize={9}
-                fontWeight={scored ? 700 : 500}
-                fill={color === GREY ? MUTED : color}
-                stroke="#fff"
-                strokeWidth={2.5}
-                paintOrder="stroke"
-              >
-                {d.result_abbreviation}
-              </text>
+              {!kickoffReturn && (
+                <text
+                  x={x + 7}
+                  y={y2 + 3.5}
+                  fontSize={9}
+                  fontWeight={scored ? 700 : 500}
+                  fill={color === GREY ? MUTED : color}
+                  stroke="#fff"
+                  strokeWidth={2.5}
+                  paintOrder="stroke"
+                >
+                  {possessionLabel}
+                </text>
+              )}
               {/* a wide invisible target so the tooltip is easy to hit */}
               <rect
                 x={x - COL / 2}
@@ -523,10 +563,16 @@ export function DriveChart({
             {hover.d.plays} play{Number(hover.d.plays) === 1 ? "" : "s"}, {hover.d.yards} yards
           </div>
           <div style={{ color: driveColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
-          {Number(hover.d.defensive_points_scored) > 0 && (
+          {hover.d.is_special_teams_touchdown ? (
             <div style={{ color: NAVY }}>
-              {hover.d.defensive_score_type} — {hover.d.defense} {hover.d.defensive_points_scored} pts
+              {hover.d.special_teams_score_type} touchdown — {hover.d.defense}
             </div>
+          ) : (
+            Number(hover.d.defensive_points_scored) > 0 && (
+              <div style={{ color: NAVY }}>
+                {hover.d.defensive_score_type} — {hover.d.defense} {hover.d.defensive_points_scored} pts
+              </div>
+            )
           )}
           <div style={{ color: MUTED }}>
             {abbr(hover.d.away_team ?? "")} {hover.d.away_score_after} · {abbr(hover.d.home_team ?? "")}{" "}
@@ -838,12 +884,13 @@ function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: stri
 // The chart's own palette (drive-chart.part.tsx), in words. Every mark on
 // the chart also carries a text label, so this is a convenience rather
 // than the only way to read it.
-const LEGEND: { color: string; dash?: boolean; label: string }[] = [
+const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
   { color: NAVY, label: "Touchdown" },
   { color: BLUE, label: "Field goal" },
   { color: ORANGE, label: "Drive lost yardage" },
   { color: GREY, label: "Punt, turnover or clock" },
   { color: NAVY, dash: true, label: "Defensive touchdown" },
+  { color: NAVY, dot: true, label: "Special teams touchdown (kickoff, punt, blocked kick)" },
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
 ];
 
@@ -862,8 +909,8 @@ function DriveLegend() {
             <line
               x1="1" y1="5" x2="19" y2="5"
               stroke={item.color}
-              strokeWidth={item.dash ? 1.5 : 2.5}
-              strokeDasharray={item.dash ? "3 3" : undefined}
+              strokeWidth={item.dash ? 1.5 : 2}
+              strokeDasharray={item.dot ? "1 3.5" : item.dash ? "3 3" : undefined}
               strokeLinecap="round"
             />
           </svg>

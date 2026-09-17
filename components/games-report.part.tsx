@@ -297,12 +297,13 @@ function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: stri
 // The chart's own palette (drive-chart.part.tsx), in words. Every mark on
 // the chart also carries a text label, so this is a convenience rather
 // than the only way to read it.
-const LEGEND: { color: string; dash?: boolean; label: string }[] = [
+const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
   { color: NAVY, label: "Touchdown" },
   { color: BLUE, label: "Field goal" },
   { color: ORANGE, label: "Drive lost yardage" },
   { color: GREY, label: "Punt, turnover or clock" },
   { color: NAVY, dash: true, label: "Defensive touchdown" },
+  { color: NAVY, dot: true, label: "Special teams touchdown (kickoff, punt, blocked kick)" },
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
 ];
 
@@ -321,8 +322,8 @@ function DriveLegend() {
             <line
               x1="1" y1="5" x2="19" y2="5"
               stroke={item.color}
-              strokeWidth={item.dash ? 1.5 : 2.5}
-              strokeDasharray={item.dash ? "3 3" : undefined}
+              strokeWidth={item.dash ? 1.5 : 2}
+              strokeDasharray={item.dot ? "1 3.5" : item.dash ? "3 3" : undefined}
               strokeLinecap="round"
             />
           </svg>
