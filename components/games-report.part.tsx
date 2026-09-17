@@ -270,25 +270,33 @@ function ThrillMeter({ g }: { g: any }) {
   );
 }
 
-/** "See all of TCU's games" — the same place the Team picker would take you. */
+/**
+ * "See all of TCU's games" — the same place the Team picker would take you —
+ * and the game on ESPN. The feed's game id IS the ESPN game id, so the box
+ * score is one URL away.
+ */
 function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: string) => void }) {
   const teams = [g.away_team, g.home_team].filter((t) => t && !(team && sameTeam(team, t)));
-  if (!teams.length) return null;
+  const linkStyle: React.CSSProperties = {
+    background: "none", border: 0, padding: 0, cursor: "pointer", textAlign: "left",
+    font: "inherit", fontSize: 11.5, color: "var(--dash-accent, #2a78d6)", textDecoration: "none",
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 8 }}>
       {teams.map((t) => (
-        <button
-          key={t}
-          onClick={() => onPick(t)}
-          title={`Show every ${t} game this season`}
-          style={{
-            background: "none", border: 0, padding: 0, cursor: "pointer", textAlign: "left",
-            font: "inherit", fontSize: 11.5, color: "var(--dash-accent, #2a78d6)",
-          }}
-        >
+        <button key={t} onClick={() => onPick(t)} title={`Show every ${t} game this season`} style={linkStyle}>
           See all of {possessive(t)} games →
         </button>
       ))}
+      <a
+        href={`https://www.espn.com/college-football/game/_/gameId/${Number(g.game_id)}/`}
+        target="_blank"
+        rel="noreferrer noopener"
+        title="Open this game on ESPN"
+        style={linkStyle}
+      >
+        ESPN game summary ↗
+      </a>
     </div>
   );
 }
