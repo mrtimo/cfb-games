@@ -40,6 +40,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -283,9 +284,24 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .home[hidden]{display:none}
 `;
 
+// Cache busting. Only the shared chunk carries a content hash in its name;
+// shell.js, each frame's entry, model.json and site.css ship under fixed
+// names, and GitHub Pages lets a browser hold them for ten minutes. After a
+// deploy that served a stale frame against a fresh model — the worst version
+// of which is an old model.json under a new shell — so every one of them gets
+// ?v=<content hash>.
+const version = (rel) =>
+  crypto.createHash("sha256").update(fs.readFileSync(path.join(out, rel))).digest("hex").slice(0, 10);
+const v = {
+  shell: version("assets/shell.js"),
+  model: version("assets/model.json"),
+  css: version("assets/site.css"),
+  frame: Object.fromEntries(dashboards.map((d) => [d.name, version(`assets/frames/${d.name}.js`)])),
+};
+
 const site = {
   title: TITLE,
-  model: "assets/model.json",
+  model: `assets/model.json?v=${v.model}`,
   dataFiles,
   setupSQL,
   dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "" })),
@@ -301,9 +317,9 @@ const shellHtml = `<!doctype html>
 ${ICON}
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://huggingface.co" crossorigin>
-<link rel="preload" href="./assets/model.json" as="fetch" crossorigin="anonymous">
-<link rel="modulepreload" href="./assets/shell.js">
-<link rel="stylesheet" href="./assets/site.css">
+<link rel="preload" href="./${site.model}" as="fetch" crossorigin="anonymous">
+<link rel="modulepreload" href="./assets/shell.js?v=${v.shell}">
+<link rel="stylesheet" href="./assets/site.css?v=${v.css}">
 <style>${SHELL_CSS}</style>
 </head>
 <body class="shell">
@@ -321,7 +337,7 @@ ${ICON}
   .join("")}</ul></main></div>
 </div>
 <script>window.__SITE__ = ${safeJson(site)};</script>
-<script type="module" src="./assets/shell.js"></script>
+<script type="module" src="./assets/shell.js?v=${v.shell}"></script>
 </body>
 </html>
 `;
@@ -337,7 +353,7 @@ for (const d of dashboards) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(d.info.title || d.name)}</title>
-<link rel="stylesheet" href="../assets/site.css">
+<link rel="stylesheet" href="../assets/site.css?v=${v.css}">
 </head>
 <body>
 <div id="root"></div>
@@ -345,7 +361,7 @@ for (const d of dashboards) {
 window.__DASHBOARD__ = ${safeJson(d.info)};
 window.__GIVENS__ = ${safeJson(d.givens)};
 </script>
-<script type="module" src="../assets/frames/${encodeURIComponent(d.name)}.js"></script>
+<script type="module" src="../assets/frames/${encodeURIComponent(d.name)}.js?v=${v.frame[d.name]}"></script>
 </body>
 </html>
 `
