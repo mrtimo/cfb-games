@@ -41,6 +41,11 @@ const LEDGER_TOP_PAD = 16;
 const ROW_H = 21;
 const RETURN_DX = 10;    // a return touchdown sits this far right of the possession
 const U_TURN = 9;        // how far it carries on before turning back
+// Every kickoff marker sits this far LEFT of the possession it sets up. Placing
+// it midway between the two possessions instead made the kick after halftime —
+// and after regulation — reach much further right than the rest, because those
+// breaks add a gap to the spacing.
+const KO_DX = COL / 2;
 
 /** Team names as they arrive from two different givens — compare loosely. */
 const sameTeam = (a: string, b: string) =>
@@ -282,7 +287,7 @@ export function DriveChart({
         // opening kickoff: straight down the field from the tee, then across
         // to the possession it set up
         const koY = yFor(kicker === home ? 35 : 65);
-        const koX = x - COL * 0.62;
+        const koX = x - KO_DX;
         out.push({
           path: routePath([[koX, koY], [koX, startY], [x, startY]]),
           ko: { x: koX, y: koY },
@@ -293,7 +298,6 @@ export function DriveChart({
       const px = xFor(i - 1);
       const endY = yFor(Number(prev.end_yardline));
       const xa = px + COL * 0.36;
-      const xb = x - COL * 0.36;
 
       if (kicker) {
         // The dotted line does NOT run out of a possession that scored,
@@ -302,7 +306,7 @@ export function DriveChart({
         // marker. Nothing traces from the last play of the half to the
         // second-half kickoff.
         const koY = yFor(kicker === home ? 35 : 65);
-        const koX = (xa + xb) / 2;
+        const koX = x - KO_DX;
         const inbound =
           prevPutPointsUp || startsSecondHalf
             ? ""
