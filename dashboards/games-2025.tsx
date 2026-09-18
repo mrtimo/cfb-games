@@ -40,6 +40,7 @@ const FIELD_TOP = 26;
 const LEDGER_TOP_PAD = 16;
 const ROW_H = 21;
 const RETURN_DX = 10;    // a return touchdown sits this far right of the possession
+const U_TURN = 9;        // how far it carries on before turning back
 
 /** Team names as they arrive from two different givens — compare loosely. */
 const sameTeam = (a: string, b: string) =>
@@ -115,13 +116,30 @@ const gameTags = (awayTeam: string, homeTeam: string): [string, string] => {
   return [a[0], h[0]];
 };
 
+const isGiveaway = (d: any) => d.result_category === "Interception" || d.result_category === "Fumble";
+
+/** The possession itself: orange only when the drive LOST ground. */
 const driveColor = (d: any) => {
   if (d.result_category === "Touchdown") return NAVY;
   if (d.result_category === "Field goal") return BLUE;
-  // a giveaway, or a possession that ended behind where it started
-  if (d.result_category === "Interception" || d.result_category === "Fumble") return ORANGE;
+  // a possession that ended behind where it started
   if (Number(d.yards) < 0) return ORANGE;
   return GREY;
+};
+
+/** The result label. A giveaway is called out in orange while its line stays
+    grey — the turnover is the news, not the ground the drive covered. */
+const labelColor = (d: any) => {
+  const line = driveColor(d);
+  if (line !== GREY) return line;
+  return isGiveaway(d) ? ORANGE : MUTED;
+};
+
+/** Seconds of game clock as m:ss. */
+const fmtClock = (secs: any) => {
+  const s = Number(secs);
+  if (!Number.isFinite(s) || s <= 0) return null;
+  return `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
 
 /** Rounded orthogonal path through a list of points. */
@@ -261,11 +279,12 @@ export function DriveChart({
 
       if (!prev) {
         if (!kicker) continue;
-        // opening kickoff: a short hook into the first possession
+        // opening kickoff: straight down the field from the tee, then across
+        // to the possession it set up
         const koY = yFor(kicker === home ? 35 : 65);
         const koX = x - COL * 0.62;
         out.push({
-          path: routePath([[koX, koY], [koX - 1, koY], [x - COL * 0.3, koY], [x - COL * 0.3, startY], [x, startY]]),
+          path: routePath([[koX, koY], [koX, startY], [x, startY]]),
           ko: { x: koX, y: koY },
         });
         continue;
@@ -288,8 +307,11 @@ export function DriveChart({
           prevPutPointsUp || startsSecondHalf
             ? ""
             : routePath([[px, endY], [xa, endY], [xa, koY], [koX, koY]]) + " ";
+        // the kick itself goes straight down the field from the tee — it is a
+        // ball in the air, not a route across the chart — and only then runs
+        // across to where the return team took over
         out.push({
-          path: inbound + routePath([[koX, koY], [xb, koY], [xb, startY], [x, startY]]),
+          path: inbound + routePath([[koX, koY], [koX, startY], [x, startY]]),
           ko: { x: koX, y: koY },
         });
       } else {
@@ -395,6 +417,22 @@ export function DriveChart({
           // or blocked-kick return has no length in the feed, so it starts where
           // the possession ended (see chart_return_start_yardline).
           const returnFromY = yFor(Number(d.return_start_yardline ?? (kickoffReturn ? d.start_yardline : d.end_yardline)));
+          // The return turns around: it carries on the way the possession was
+          // going, steps right, and comes back the other way to the end zone —
+          // a U, which is what a return IS. A kickoff return has no possession
+          // to turn out of, so it runs straight.
+          const driveDir = Math.sign(y2 - y1) || (d.is_home_offense ? 1 : -1);
+          const returnPath = kickoffReturn
+            ? `M ${x + RETURN_DX} ${returnFromY} L ${x + RETURN_DX} ${returnY}`
+            : routePath(
+                [
+                  [x, returnFromY],
+                  [x, returnFromY + driveDir * U_TURN],
+                  [x + RETURN_DX, returnFromY + driveDir * U_TURN],
+                  [x + RETURN_DX, returnY],
+                ],
+                4
+              );
           // The possession keeps ITS own result. On a punt return the drive
           // still ended in a punt, so labelling it "ST TD" — the category the
           // return earned it — put the same words on both lines.
@@ -426,17 +464,17 @@ export function DriveChart({
                   special teams, dashed for a defense that took the ball away. */}
               {returnTd && (
                 <g>
-                  <line
-                    x1={x + RETURN_DX}
-                    y1={returnFromY}
-                    x2={x + RETURN_DX}
-                    y2={returnY}
+                  <path
+                    d={returnPath}
+                    fill="none"
                     stroke={NAVY}
                     strokeWidth={2}
                     strokeDasharray={specialTeams ? "1 3.5" : "4 3"}
                     strokeLinecap={specialTeams ? "round" : "butt"}
                   />
-                  <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
+                  {kickoffReturn && (
+                    <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
+                  )}
                   <circle cx={x + RETURN_DX} cy={returnY} r={4.2} fill={NAVY} />
                   <text
                     x={x + RETURN_DX + 6}
@@ -458,7 +496,7 @@ export function DriveChart({
                   y={y2 + 3.5}
                   fontSize={9}
                   fontWeight={scored ? 700 : 500}
-                  fill={color === GREY ? MUTED : color}
+                  fill={labelColor(d)}
                   stroke="#fff"
                   strokeWidth={2.5}
                   paintOrder="stroke"
@@ -573,9 +611,10 @@ export function DriveChart({
           <div>
             {hover.d.is_kickoff_return_touchdown
               ? `${hover.d.yards} yards, returned for a touchdown`
-              : `${hover.d.plays} play${Number(hover.d.plays) === 1 ? "" : "s"}, ${hover.d.yards} yards`}
+              : `${hover.d.plays} play${Number(hover.d.plays) === 1 ? "" : "s"}, ${hover.d.yards} yards` +
+                (fmtClock(hover.d.elapsed_seconds) ? `, ${fmtClock(hover.d.elapsed_seconds)} min` : "")}
           </div>
-          <div style={{ color: driveColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
+          <div style={{ color: labelColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
           {hover.d.is_special_teams_touchdown ? (
             <div style={{ color: NAVY }}>
               {hover.d.special_teams_score_type} touchdown — {hover.d.defense}
@@ -657,27 +696,48 @@ const num = (v: any): number | null => (v == null || v === "" ? null : Number(v)
 const possessive = (name: string) => `${name}${/s$/i.test(name) ? "'" : "'s"}`;
 
 /**
- * StartDate is a naive US/Pacific wall-clock time (see games.malloy), so
- * it is read and formatted as UTC — which leaves the wall clock alone —
- * and labelled PT. A value without a zone would otherwise be read as the
- * VIEWER's local time and shift by their offset.
+ * StartDate is a naive US/Pacific WALL CLOCK (see games.malloy): no zone, and
+ * the digits are what a clock in Los Angeles read. To show a reader the time
+ * in THEIR zone it has to become a real instant first — read the digits as
+ * UTC, ask what Los Angeles was reading at that instant, and shift by the
+ * difference. That difference is 7 or 8 hours depending on the date, so a
+ * November kickoff survives the end of daylight saving.
  */
+const PACIFIC = "America/Los_Angeles";
+
+/** The wall clock a zone shows at `instant`, as if those digits were UTC. */
+const wallClockIn = (instant: Date, timeZone: string) => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(instant);
+  const at = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  return Date.UTC(at("year"), at("month") - 1, at("day"), at("hour") % 24, at("minute"), at("second"));
+};
+
 const kickoffDate = (v: any): Date | null => {
   if (v == null || v === "") return null;
-  if (v instanceof Date) return v;
-  const s = String(v).trim().replace(" ", "T");
-  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`);
+  // Read the DIGITS and ignore any zone marker on them. Malloy hands the
+  // timestamp over as ISO with a Z, but the feed wrote a naive Pacific wall
+  // clock, so that Z is an artifact of serializing a zoneless value — trusting
+  // it moves every kickoff by Pacific's offset (5:00 PM became 10:00 AM).
+  const iso = v instanceof Date ? v.toISOString() : String(v).trim().replace(" ", "T");
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(iso);
+  if (!m) return null;
+  const wallClock = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? 0));
+  return new Date(wallClock + (wallClock - wallClockIn(new Date(wallClock), PACIFIC)));
 };
 
 const kickoffTime = (g: any) => kickoffDate(g.start_date)?.getTime() ?? null;
 
+/** In the reader's own time zone, named so nobody has to guess whose clock it is. */
 const fmtKickoff = (g: any) => {
   const d = kickoffDate(g.start_date);
   if (!d) return "";
-  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const day = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   if (g.start_time_tbd) return `${day} · time TBD`;
-  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
-  return `${day} · ${time} PT`;
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return `${day} · ${time}`;
 };
 
 const isPlayed = (g: any) => !!g.completed && num(g.home_points) != null && num(g.away_points) != null;
@@ -836,6 +896,8 @@ function Scoreboard({ g }: { g: any }) {
 }
 
 function ThrillMeter({ g }: { g: any }) {
+  // before the early return below: hooks run in the same order every render
+  const [open, setOpen] = useState(false);
   const v = num(g.thrill_index);
   if (!isPlayed(g) || v == null) {
     // unplayed: what the ratings expect instead
@@ -853,8 +915,17 @@ function ThrillMeter({ g }: { g: any }) {
   }
   const color = THRILL_COLORS[g.thrill_tier] || GREY;
   const why = THRILL_PARTS.map(([k, label, max]) => [label, num(g[k]) ?? 0, max] as const).filter(([, pts]) => pts >= 0.5);
+  // What earned the score is a detail, not a headline: it waits on the hover.
   return (
-    <div style={{ minWidth: 0 }}>
+    <div
+      style={{ minWidth: 0, position: "relative", cursor: "help" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      tabIndex={0}
+      title="What earned this score"
+    >
       <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
         <span style={{ fontSize: 26, fontWeight: 800, color: INK, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{v}</span>
         <span style={{ fontSize: 10.5, color: MUTED, textTransform: "uppercase", letterSpacing: ".05em" }}>Thrill</span>
@@ -863,11 +934,28 @@ function ThrillMeter({ g }: { g: any }) {
         <div style={{ width: `${Math.max(2, v)}%`, height: "100%", background: color, borderRadius: 3 }} />
       </div>
       <div style={{ fontSize: 12, color: INK_2, fontWeight: 600 }}>{g.thrill_tier}</div>
-      <div style={{ fontSize: 10.5, color: MUTED, marginTop: 2, lineHeight: 1.4 }}>
-        {why.map(([label, pts]) => `${label} ${Math.round(pts)}`).join(" · ")}
-      </div>
-      {num(g.excitement_index) != null && (
-        <div style={{ fontSize: 10.5, color: MUTED, marginTop: 2 }}>CFBD excitement {Number(g.excitement_index).toFixed(1)}</div>
+      {open && (
+        <div
+          style={{
+            position: "absolute", zIndex: 6, top: "100%", left: 0, marginTop: 4, minWidth: 200,
+            background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 8,
+            boxShadow: "0 6px 20px rgba(15,20,30,0.14)", padding: "8px 10px",
+            fontSize: 11, lineHeight: 1.6, color: INK_2,
+          }}
+        >
+          {why.map(([label, pts, max]) => (
+            <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 14 }}>
+              <span>{label}</span>
+              <span style={{ color: INK, fontVariantNumeric: "tabular-nums" }}>
+                {Math.round(pts)}
+                <span style={{ color: MUTED }}> / {max}</span>
+              </span>
+            </div>
+          ))}
+          {num(g.excitement_index) != null && (
+            <div style={{ marginTop: 5, color: MUTED }}>CFBD excitement {Number(g.excitement_index).toFixed(1)}</div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -900,6 +988,15 @@ function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: stri
       >
         ESPN game summary ↗
       </a>
+      <a
+        href={`https://gameonpaper.com/game/${Number(g.game_id)}`}
+        target="_blank"
+        rel="noreferrer noopener"
+        title="Open this game on Game on Paper"
+        style={linkStyle}
+      >
+        Game on Paper summary ↗
+      </a>
     </div>
   );
 }
@@ -911,8 +1008,8 @@ function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: stri
 const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
   { color: NAVY, label: "Touchdown" },
   { color: BLUE, label: "Field goal" },
-  { color: ORANGE, label: "Turnover, or drive lost yardage" },
-  { color: GREY, label: "Punt or clock" },
+  { color: ORANGE, label: "Drive lost yardage" },
+  { color: GREY, label: "Punt, turnover or clock — a turnover's label is orange" },
   { color: NAVY, dash: true, label: "Defensive touchdown" },
   { color: NAVY, dot: true, label: "Special teams touchdown (kickoff, punt, blocked kick)" },
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
@@ -1147,7 +1244,16 @@ export default function Dashboard({ dashboard, givens }: any) {
       </h1>
       <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--dash-muted, #6b7280)" }}>
         Every game of the {season} season, with its line score, thrill index and drive chart. Pick a
-        team, conference or week to narrow the list.
+        team, conference or week to narrow the list. Inspired by{" "}
+        <a
+          href="https://bcftoys.com/whiteboard/possession-flow"
+          target="_blank"
+          rel="noreferrer noopener"
+          style={{ color: "var(--dash-accent, #2a78d6)" }}
+        >
+          BCFToys
+        </a>
+        .
       </p>
 
       <Controls>

@@ -96,6 +96,7 @@ source: drives is drives_base extend {
       end_field_position
       plays is Plays
       yards is Yards
+      elapsed_seconds is time_of_possession_seconds
       result_category
       result_abbreviation
       drive_points

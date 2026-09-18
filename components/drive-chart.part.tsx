@@ -32,6 +32,7 @@ const FIELD_TOP = 26;
 const LEDGER_TOP_PAD = 16;
 const ROW_H = 21;
 const RETURN_DX = 10;    // a return touchdown sits this far right of the possession
+const U_TURN = 9;        // how far it carries on before turning back
 
 /** Team names as they arrive from two different givens — compare loosely. */
 const sameTeam = (a: string, b: string) =>
@@ -107,13 +108,30 @@ const gameTags = (awayTeam: string, homeTeam: string): [string, string] => {
   return [a[0], h[0]];
 };
 
+const isGiveaway = (d: any) => d.result_category === "Interception" || d.result_category === "Fumble";
+
+/** The possession itself: orange only when the drive LOST ground. */
 const driveColor = (d: any) => {
   if (d.result_category === "Touchdown") return NAVY;
   if (d.result_category === "Field goal") return BLUE;
-  // a giveaway, or a possession that ended behind where it started
-  if (d.result_category === "Interception" || d.result_category === "Fumble") return ORANGE;
+  // a possession that ended behind where it started
   if (Number(d.yards) < 0) return ORANGE;
   return GREY;
+};
+
+/** The result label. A giveaway is called out in orange while its line stays
+    grey — the turnover is the news, not the ground the drive covered. */
+const labelColor = (d: any) => {
+  const line = driveColor(d);
+  if (line !== GREY) return line;
+  return isGiveaway(d) ? ORANGE : MUTED;
+};
+
+/** Seconds of game clock as m:ss. */
+const fmtClock = (secs: any) => {
+  const s = Number(secs);
+  if (!Number.isFinite(s) || s <= 0) return null;
+  return `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
 
 /** Rounded orthogonal path through a list of points. */
@@ -253,11 +271,12 @@ export function DriveChart({
 
       if (!prev) {
         if (!kicker) continue;
-        // opening kickoff: a short hook into the first possession
+        // opening kickoff: straight down the field from the tee, then across
+        // to the possession it set up
         const koY = yFor(kicker === home ? 35 : 65);
         const koX = x - COL * 0.62;
         out.push({
-          path: routePath([[koX, koY], [koX - 1, koY], [x - COL * 0.3, koY], [x - COL * 0.3, startY], [x, startY]]),
+          path: routePath([[koX, koY], [koX, startY], [x, startY]]),
           ko: { x: koX, y: koY },
         });
         continue;
@@ -280,8 +299,11 @@ export function DriveChart({
           prevPutPointsUp || startsSecondHalf
             ? ""
             : routePath([[px, endY], [xa, endY], [xa, koY], [koX, koY]]) + " ";
+        // the kick itself goes straight down the field from the tee — it is a
+        // ball in the air, not a route across the chart — and only then runs
+        // across to where the return team took over
         out.push({
-          path: inbound + routePath([[koX, koY], [xb, koY], [xb, startY], [x, startY]]),
+          path: inbound + routePath([[koX, koY], [koX, startY], [x, startY]]),
           ko: { x: koX, y: koY },
         });
       } else {
@@ -387,6 +409,22 @@ export function DriveChart({
           // or blocked-kick return has no length in the feed, so it starts where
           // the possession ended (see chart_return_start_yardline).
           const returnFromY = yFor(Number(d.return_start_yardline ?? (kickoffReturn ? d.start_yardline : d.end_yardline)));
+          // The return turns around: it carries on the way the possession was
+          // going, steps right, and comes back the other way to the end zone —
+          // a U, which is what a return IS. A kickoff return has no possession
+          // to turn out of, so it runs straight.
+          const driveDir = Math.sign(y2 - y1) || (d.is_home_offense ? 1 : -1);
+          const returnPath = kickoffReturn
+            ? `M ${x + RETURN_DX} ${returnFromY} L ${x + RETURN_DX} ${returnY}`
+            : routePath(
+                [
+                  [x, returnFromY],
+                  [x, returnFromY + driveDir * U_TURN],
+                  [x + RETURN_DX, returnFromY + driveDir * U_TURN],
+                  [x + RETURN_DX, returnY],
+                ],
+                4
+              );
           // The possession keeps ITS own result. On a punt return the drive
           // still ended in a punt, so labelling it "ST TD" — the category the
           // return earned it — put the same words on both lines.
@@ -418,17 +456,17 @@ export function DriveChart({
                   special teams, dashed for a defense that took the ball away. */}
               {returnTd && (
                 <g>
-                  <line
-                    x1={x + RETURN_DX}
-                    y1={returnFromY}
-                    x2={x + RETURN_DX}
-                    y2={returnY}
+                  <path
+                    d={returnPath}
+                    fill="none"
                     stroke={NAVY}
                     strokeWidth={2}
                     strokeDasharray={specialTeams ? "1 3.5" : "4 3"}
                     strokeLinecap={specialTeams ? "round" : "butt"}
                   />
-                  <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
+                  {kickoffReturn && (
+                    <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
+                  )}
                   <circle cx={x + RETURN_DX} cy={returnY} r={4.2} fill={NAVY} />
                   <text
                     x={x + RETURN_DX + 6}
@@ -450,7 +488,7 @@ export function DriveChart({
                   y={y2 + 3.5}
                   fontSize={9}
                   fontWeight={scored ? 700 : 500}
-                  fill={color === GREY ? MUTED : color}
+                  fill={labelColor(d)}
                   stroke="#fff"
                   strokeWidth={2.5}
                   paintOrder="stroke"
@@ -565,9 +603,10 @@ export function DriveChart({
           <div>
             {hover.d.is_kickoff_return_touchdown
               ? `${hover.d.yards} yards, returned for a touchdown`
-              : `${hover.d.plays} play${Number(hover.d.plays) === 1 ? "" : "s"}, ${hover.d.yards} yards`}
+              : `${hover.d.plays} play${Number(hover.d.plays) === 1 ? "" : "s"}, ${hover.d.yards} yards` +
+                (fmtClock(hover.d.elapsed_seconds) ? `, ${fmtClock(hover.d.elapsed_seconds)} min` : "")}
           </div>
-          <div style={{ color: driveColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
+          <div style={{ color: labelColor(hover.d), fontWeight: 600 }}>{hover.d.result_category}</div>
           {hover.d.is_special_teams_touchdown ? (
             <div style={{ color: NAVY }}>
               {hover.d.special_teams_score_type} touchdown — {hover.d.defense}
