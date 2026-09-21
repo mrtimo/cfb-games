@@ -240,13 +240,16 @@ type View = {
 
 const stage = document.getElementById("stage")!;
 const home = document.getElementById("home")!;
+// Static pages the shell owns itself — no model, no iframe.
+const about = document.getElementById("about");
+const isPage = (name: string) => name === "about";
 const views = new Map<string, View>();
 let current = "";
 
 /** Which dashboard a URL names: its file name, or "" for the home page. */
 function routeOf(url: Location | URL) {
   const file = decodeURIComponent(url.pathname.slice(siteBase.pathname.length)).replace(/\.html$/, "");
-  return byName.has(file) ? file : "";
+  return byName.has(file) || isPage(file) ? file : "";
 }
 
 const searchOf = (v?: View) => (v ? shareSearch({ givens: v.givens, urlState: v.urlState }) : "");
@@ -256,6 +259,8 @@ const urlFor = (name: string, search: string) =>
 function createView(name: string, search: string): View {
   const frame = document.createElement("iframe");
   frame.title = byName.get(name)!.title;
+  // the games reports copy a game's link from inside the frame
+  frame.allow = "clipboard-write";
   frame.src = new URL(`frames/${encodeURIComponent(name)}.html${search}`, siteBase).href;
   stage.appendChild(frame);
   const v = { name, frame, givens: givensFromSearch(search), urlState: urlStateFromSearch(search) };
@@ -267,8 +272,10 @@ function createView(name: string, search: string): View {
     yet; an existing view keeps the state it already has. */
 function show(name: string, search: string) {
   current = name;
-  if (name && !views.has(name)) createView(name, search);
+  const dashboard = byName.get(name);
+  if (dashboard && !views.has(name)) createView(name, search);
   home.hidden = name !== "";
+  if (about) about.hidden = name !== "about";
   for (const [n, v] of views) {
     const on = n === name;
     v.frame.classList.toggle("on", on);
@@ -278,7 +285,11 @@ function show(name: string, search: string) {
   document.querySelectorAll<HTMLAnchorElement>(".dash-nav a[data-route]").forEach((a) => {
     a.classList.toggle("on", a.dataset.route === name && name !== "");
   });
-  document.title = name ? `${byName.get(name)!.title} · ${SITE.title}` : SITE.title;
+  document.title = dashboard
+    ? `${dashboard.title} · ${SITE.title}`
+    : name === "about"
+      ? `About · ${SITE.title}`
+      : SITE.title;
 }
 
 /** The address bar follows the visible dashboard's own state. */

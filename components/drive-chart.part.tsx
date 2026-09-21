@@ -450,7 +450,9 @@ export function DriveChart({
               {!kickoffReturn && (
                 <>
                   <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
-                  <circle cx={x} cy={y1} r={3.2} fill={color} />
+                  {/* only the END of the possession gets a dot: the line's own
+                      start is clear enough, and two sizes of dot per drive made
+                      a chart of twenty possessions hard to read */}
                   <circle cx={x} cy={y2} r={4.2} fill={color} />
                 </>
               )}
@@ -468,9 +470,6 @@ export function DriveChart({
                     strokeDasharray={specialTeams ? "1 3.5" : "4 3"}
                     strokeLinecap={specialTeams ? "round" : "butt"}
                   />
-                  {kickoffReturn && (
-                    <circle cx={x + RETURN_DX} cy={returnFromY} r={3} fill="#fff" stroke={NAVY} strokeWidth={1.4} />
-                  )}
                   <circle cx={x + RETURN_DX} cy={returnY} r={4.2} fill={NAVY} />
                   <text
                     x={x + RETURN_DX + 6}

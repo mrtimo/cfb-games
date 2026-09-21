@@ -282,6 +282,13 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .stage>iframe.on{visibility:visible}
 .home{position:absolute;inset:0;overflow:auto}
 .home[hidden]{display:none}
+/* the about list is prose, not the index's card links */
+.about-list{list-style:none;padding:0;margin:20px 0 0;display:grid;gap:14px;max-width:660px}
+.about-list li{font-size:14px;line-height:1.6}
+.about-list li strong{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
+.index .about-list a{display:inline;padding:0;border:0;border-radius:0;background:none;color:var(--accent);text-decoration:none}
+.index .about-list a:hover{text-decoration:underline}
+.about-note{max-width:660px;font-size:14px;line-height:1.6;color:var(--muted);margin:10px 0 0}
 `;
 
 // Cache busting. Only the shared chunk carries a content hash in its name;
@@ -307,6 +314,18 @@ const site = {
   dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "" })),
 };
 
+const link = (href, text) => `<a href="${href}" target="_blank" rel="noreferrer noopener">${text}</a>`;
+const ABOUT_HTML = `<div id="about" class="home" hidden><main class="index">
+<h1>About</h1>
+<p class="about-note">Every game of the 2025 and 2026 college football seasons: the line score, a thrill index, a drive chart of every possession, and team rankings. The data is queried in your browser — there is no server.</p>
+<ul class="about-list">
+<li><strong>Data</strong>${link("https://collegefootballdata.com/", "collegefootballdata.com")}</li>
+<li><strong>Original design for the drive charts</strong>${link("https://bcftoys.com/whiteboard/possession-flow", "BCFToys · possession flow")}</li>
+<li><strong>Made with</strong>${link("http://malloydata.dev/", "the Malloy data language")} and ${link("https://github.com/malloydata/malloyyo", "Malloyyo")}</li>
+<li><strong>Made by</strong>${link("https://www.linkedin.com/in/4timolsen/", "Tim Olsen")}</li>
+</ul>
+</main></div>`;
+
 const shellHtml = `<!doctype html>
 <html lang="en">
 <head>
@@ -325,7 +344,7 @@ ${ICON}
 <body class="shell">
 <nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home">${HOME_ICON}</a><span class="sep"></span>${site.dashboards
   .map((d) => `<a href="./${encodeURIComponent(d.name)}.html" data-route="${esc(d.name)}">${esc(d.title)}</a>`)
-  .join("")}<span id="status" class="status" role="status"><i></i><span></span></span></nav>
+  .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span></nav>
 <div id="stage" class="stage">
 <div id="home" class="home"><main class="index"><h1>${esc(TITLE)}</h1><ul>${site.dashboards
   .map(
@@ -335,6 +354,7 @@ ${ICON}
       }</a></li>`
   )
   .join("")}</ul></main></div>
+${ABOUT_HTML}
 </div>
 <script>window.__SITE__ = ${safeJson(site)};</script>
 <script type="module" src="./assets/shell.js?v=${v.shell}"></script>
@@ -343,6 +363,8 @@ ${ICON}
 `;
 
 fs.writeFileSync(path.join(out, "index.html"), shellHtml);
+// the About page is the shell too — the file name is what routes it
+fs.writeFileSync(path.join(out, "about.html"), shellHtml);
 for (const d of dashboards) {
   fs.writeFileSync(path.join(out, `${d.name}.html`), shellHtml);
   fs.writeFileSync(

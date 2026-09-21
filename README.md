@@ -8,6 +8,7 @@ on the site without a rebuild.
 | Dashboard | What it is |
 |---|---|
 | `games-2025`, `games-2026` | One scoreboard card per game. Filter by team, conference, week and division (all in the URL as `$TEAM`, `$CONFERENCE`, `$GAME_WEEK`, `$DIVISION`); sort by kickoff, thrill index, CFBD excitement, closest finish, most points or biggest upset (`~sort=`). Every card opens with its drive chart (hide it per card), under a legend that toggles off (`~legend=`); with one team picked, the Up / Down / Default direction control (`~orient=`) points its drives. Each card links to the other team's full season, and to the game on ESPN and Game on Paper (the feed's game id is the ESPN game id). Kickoff times are converted from the feed's naive US/Pacific wall clock to a real instant and shown in the reader's own time zone, zone abbreviation included. Picking a conference clears the team, and a team link clears the conference, week and division — either filter alone is what the reader asked for. |
+| `about` | Credits: the data, the drive-chart design, Malloy and Malloyyo, and who made it. A route the shell owns — not a dashboard — served as `about.html`. |
 | `team-rankings` | One wide table of every team — record, points for and allowed, margin, offensive and defensive drive efficiency (points per drive, yards per play, Eckel rate, TD / explosive / three-and-out / turnover rates), Elo and strength of schedule. Click a header to re-rank (`~sort=`, `~dir=`). |
 
 ## Files

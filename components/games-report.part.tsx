@@ -54,6 +54,47 @@ const num = (v: any): number | null => (v == null || v === "" ? null : Number(v)
 const possessive = (name: string) => `${name}${/s$/i.test(name) ? "'" : "'s"}`;
 
 /**
+ * The address the READER sees. This component runs in an iframe: same-origin
+ * on the published site, where the shell's URL is the shareable one, and
+ * cross-origin under `dashboard dev`, where reading it throws — so fall back
+ * to this frame's own page there.
+ */
+const shareUrlFor = (dashboardName: string | undefined, gameId: any) => {
+  let url: URL;
+  try {
+    url = new URL(window.parent !== window ? window.parent.location.href : location.href);
+  } catch {
+    url = new URL(`../${dashboardName || ""}.html`, location.href);
+    url.search = location.search;
+  }
+  // `~` is the runtime's view-state namespace, so opening this link lands on
+  // this one game with every filter the reader had set.
+  url.searchParams.set("~game", String(Number(gameId)));
+  return url.toString();
+};
+
+/** Clipboard API, with the old execCommand path for frames that refuse it. */
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("style", "position:fixed;top:0;left:0;opacity:0");
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
  * StartDate is a naive US/Pacific WALL CLOCK (see games.malloy): no zone, and
  * the digits are what a clock in Los Angeles read. To show a reader the time
  * in THEIR zone it has to become a real instant first — read the digits as
@@ -324,14 +365,33 @@ function ThrillMeter({ g }: { g: any }) {
  * and the game on ESPN. The feed's game id IS the ESPN game id, so the box
  * score is one URL away.
  */
-function TeamLinks({ g, team, onPick }: { g: any; team: string; onPick: (t: string) => void }) {
+function TeamLinks({ g, team, onPick, dashboardName }: {
+  g: any; team: string; onPick: (t: string) => void; dashboardName?: string;
+}) {
   const teams = [g.away_team, g.home_team].filter((t) => t && !(team && sameTeam(team, t)));
+  const [copied, setCopied] = useState<null | boolean>(null);
   const linkStyle: React.CSSProperties = {
     background: "none", border: 0, padding: 0, cursor: "pointer", textAlign: "left",
     font: "inherit", fontSize: 11.5, color: "var(--dash-accent, #2a78d6)", textDecoration: "none",
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 8 }}>
+      <button
+        onClick={async () => {
+          const ok = await copyToClipboard(shareUrlFor(dashboardName, g.game_id));
+          setCopied(ok);
+          setTimeout(() => setCopied(null), 2400);
+        }}
+        title="Copy a link that opens this game"
+        style={{ ...linkStyle, fontWeight: 600 }}
+      >
+        Share link to game ⧉
+      </button>
+      {copied !== null && (
+        <span style={{ fontSize: 11, color: copied ? "#1b7f4d" : "var(--dash-danger, #b91c1c)" }}>
+          {copied ? "Link copied to clipboard" : "Couldn't copy — copy the address bar instead"}
+        </span>
+      )}
       {teams.map((t) => (
         <button key={t} onClick={() => onPick(t)} title={`Show every ${t} game this season`} style={linkStyle}>
           See all of {possessive(t)} games →
@@ -403,7 +463,7 @@ function DriveLegend() {
   );
 }
 
-function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam }: {
+function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashboardName }: {
   g: any;
   /** This game's drives: undefined while they load, [] when the feed has none. */
   drives?: any[];
@@ -411,6 +471,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam }: {
   focusTeam?: string;
   orient: DriveOrient;
   onPickTeam: (t: string) => void;
+  dashboardName?: string;
 }) {
   const [open, setOpen] = useState(true);
   const chartable = canChart(g);
@@ -448,7 +509,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam }: {
         </div>
         <div style={{ flex: "0 1 210px", minWidth: 150 }}>
           <ThrillMeter g={g} />
-          <TeamLinks g={g} team={focusTeam || ""} onPick={onPickTeam} />
+          <TeamLinks g={g} team={focusTeam || ""} onPick={onPickTeam} dashboardName={dashboardName} />
         </div>
       </div>
 
@@ -545,6 +606,8 @@ export default function Dashboard({ dashboard, givens }: any) {
   const [sort, setSort] = useUrlState("sort", "kickoff");
   const [orient, setOrient] = useUrlState("orient", "up");
   const [legend, setLegend] = useUrlState("legend", true);
+  // set by a shared link: show that one game out of the filtered list
+  const [sharedGame, setSharedGame] = useUrlState("game", "");
   const [shown, setShown] = useState(PAGE_SIZE);
 
   // Picking a conference drops the team: a team plus somebody else's
@@ -571,7 +634,9 @@ export default function Dashboard({ dashboard, givens }: any) {
   const sorted = useMemo(() => sortGames(rows, sort), [rows, sort]);
   useEffect(() => setShown(PAGE_SIZE), [rows, sort]);
 
-  const visible = sorted.slice(0, shown);
+  const shared = sharedGame ? sorted.find((g) => String(g.game_id) === String(sharedGame)) : null;
+  const listed = shared ? [shared] : sorted;
+  const visible = listed.slice(0, shown);
   const { drives, error: drivesError } = useDrivesFor(
     list.loading ? [] : visible.filter(canChart).map((g) => Number(g.game_id))
   );
@@ -678,6 +743,27 @@ export default function Dashboard({ dashboard, givens }: any) {
         </>
       )}
 
+      {!list.loading && !list.error && sharedGame !== "" && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12,
+            background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px",
+            fontSize: 12.5, color: INK_2,
+          }}
+        >
+          <span>{shared ? "Showing one shared game." : "That shared game isn't in the current filters."}</span>
+          <button
+            onClick={() => setSharedGame("")}
+            style={{
+              background: "none", border: 0, padding: 0, cursor: "pointer", font: "inherit",
+              fontSize: 12.5, color: "var(--dash-accent, #2a78d6)",
+            }}
+          >
+            Show all games →
+          </button>
+        </div>
+      )}
+
       {list.loading && <div style={{ fontSize: 13, color: MUTED, marginTop: 16 }}>Loading games…</div>}
       {list.error && <div style={{ fontSize: 13, color: "var(--dash-danger, #b91c1c)", marginTop: 16 }}>{String(list.error)}</div>}
       {!list.loading && !list.error && rows.length === 0 && (
@@ -695,9 +781,10 @@ export default function Dashboard({ dashboard, givens }: any) {
               focusTeam={team || undefined}
               orient={orient as DriveOrient}
               onPickTeam={pickTeam}
+              dashboardName={dashboard?.name}
             />
           ))}
-          {sorted.length > shown && (
+          {listed.length > shown && (
             <div style={{ textAlign: "center", marginTop: 16 }}>
               <button
                 onClick={() => setShown(shown + PAGE_SIZE)}
@@ -707,7 +794,7 @@ export default function Dashboard({ dashboard, givens }: any) {
                   color: "var(--dash-fg, #1a1a1a)",
                 }}
               >
-                Show {Math.min(PAGE_SIZE, sorted.length - shown)} more of {sorted.length - shown} remaining
+                Show {Math.min(PAGE_SIZE, listed.length - shown)} more of {listed.length - shown} remaining
               </button>
             </div>
           )}

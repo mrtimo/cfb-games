@@ -8,8 +8,8 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://huggingface.co" crossorigin>
-<link rel="preload" href="./assets/model.json?v=448a212ddc" as="fetch" crossorigin="anonymous">
-<link rel="modulepreload" href="./assets/shell.js?v=6a048af1dc">
+<link rel="preload" href="./assets/model.json?v=b573d74106" as="fetch" crossorigin="anonymous">
+<link rel="modulepreload" href="./assets/shell.js?v=a68902821a">
 <link rel="stylesheet" href="./assets/site.css?v=fce95fc3fe">
 <style>
 html,body{height:100%}
@@ -24,14 +24,31 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .stage>iframe.on{visibility:visible}
 .home{position:absolute;inset:0;overflow:auto}
 .home[hidden]{display:none}
+/* the about list is prose, not the index's card links */
+.about-list{list-style:none;padding:0;margin:20px 0 0;display:grid;gap:14px;max-width:660px}
+.about-list li{font-size:14px;line-height:1.6}
+.about-list li strong{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
+.index .about-list a{display:inline;padding:0;border:0;border-radius:0;background:none;color:var(--accent);text-decoration:none}
+.index .about-list a:hover{text-decoration:underline}
+.about-note{max-width:660px;font-size:14px;line-height:1.6;color:var(--muted);margin:10px 0 0}
 </style>
 </head>
 <body class="shell">
-<nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.2 12 3.5l9 6.7"/><path d="M5.2 8.9V20h13.6V8.9"/><path d="M9.6 20v-6.2h4.8V20"/></svg></a><span class="sep"></span><a href="./games-2025.html" data-route="games-2025">2025 Games</a><a href="./games-2026.html" data-route="games-2026">2026 Games</a><a href="./team-rankings.html" data-route="team-rankings">Team Rankings</a><span id="status" class="status" role="status"><i></i><span></span></span></nav>
+<nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.2 12 3.5l9 6.7"/><path d="M5.2 8.9V20h13.6V8.9"/><path d="M9.6 20v-6.2h4.8V20"/></svg></a><span class="sep"></span><a href="./games-2025.html" data-route="games-2025">2025 Games</a><a href="./games-2026.html" data-route="games-2026">2026 Games</a><a href="./team-rankings.html" data-route="team-rankings">Team Rankings</a><a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span></nav>
 <div id="stage" class="stage">
 <div id="home" class="home"><main class="index"><h1>College Football Games</h1><ul><li><a href="./games-2025.html" data-route="games-2025"><strong>2025 Games</strong><span>Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.</span></a></li><li><a href="./games-2026.html" data-route="games-2026"><strong>2026 Games</strong><span>Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.</span></a></li><li><a href="./team-rankings.html" data-route="team-rankings"><strong>Team Rankings</strong><span>Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank.</span></a></li></ul></main></div>
+<div id="about" class="home" hidden><main class="index">
+<h1>About</h1>
+<p class="about-note">Every game of the 2025 and 2026 college football seasons: the line score, a thrill index, a drive chart of every possession, and team rankings. The data is queried in your browser — there is no server.</p>
+<ul class="about-list">
+<li><strong>Data</strong><a href="https://collegefootballdata.com/" target="_blank" rel="noreferrer noopener">collegefootballdata.com</a></li>
+<li><strong>Original design for the drive charts</strong><a href="https://bcftoys.com/whiteboard/possession-flow" target="_blank" rel="noreferrer noopener">BCFToys · possession flow</a></li>
+<li><strong>Made with</strong><a href="http://malloydata.dev/" target="_blank" rel="noreferrer noopener">the Malloy data language</a> and <a href="https://github.com/malloydata/malloyyo" target="_blank" rel="noreferrer noopener">Malloyyo</a></li>
+<li><strong>Made by</strong><a href="https://www.linkedin.com/in/4timolsen/" target="_blank" rel="noreferrer noopener">Tim Olsen</a></li>
+</ul>
+</main></div>
 </div>
-<script>window.__SITE__ = {"title":"College Football Games","model":"assets/model.json?v=448a212ddc","dataFiles":["https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet"],"setupSQL":"CREATE OR REPLACE TABLE cfb_games AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_drives AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'], union_by_name = true)","dashboards":[{"name":"games-2025","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"games-2026","title":"2026 Games","description":"Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"team-rankings","title":"Team Rankings","description":"Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank."}]};</script>
-<script type="module" src="./assets/shell.js?v=6a048af1dc"></script>
+<script>window.__SITE__ = {"title":"College Football Games","model":"assets/model.json?v=b573d74106","dataFiles":["https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet"],"setupSQL":"CREATE OR REPLACE TABLE cfb_games AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_drives AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'], union_by_name = true)","dashboards":[{"name":"games-2025","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"games-2026","title":"2026 Games","description":"Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"team-rankings","title":"Team Rankings","description":"Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank."}]};</script>
+<script type="module" src="./assets/shell.js?v=a68902821a"></script>
 </body>
 </html>
