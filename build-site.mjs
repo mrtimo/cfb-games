@@ -340,6 +340,8 @@ ${ICON}
 <link rel="modulepreload" href="./assets/shell.js?v=${v.shell}">
 <link rel="stylesheet" href="./assets/site.css?v=${v.css}">
 <style>${SHELL_CSS}</style>
+<script data-goatcounter="https://cfb-drives.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
 </head>
 <body class="shell">
 <nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home">${HOME_ICON}</a><span class="sep"></span>${site.dashboards
