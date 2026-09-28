@@ -256,8 +256,71 @@ const searchOf = (v?: View) => (v ? shareSearch({ givens: v.givens, urlState: v.
 const urlFor = (name: string, search: string) =>
   (name ? new URL(`${encodeURIComponent(name)}.html`, siteBase).pathname : siteBase.pathname) + search;
 
+// ── GoatCounter ─────────────────────────────────────────────────────
+// count.js (in the page head) counts the first page load. Everything the
+// reader does after that happens without a page load, so it is counted here:
+// a page view per view switched in place, an event per filter or view-state
+// change, per button or link clicked inside a dashboard, and per link out.
+// A no-op when count.js is blocked or not loaded yet.
+function gcCount(path: string, title: string, event: boolean) {
+  try {
+    window.goatcounter?.count?.({ path, title, event });
+  } catch {
+    // tracking never breaks the site
+  }
+}
+const gcPageView = (name: string) => gcCount(urlFor(name, ""), document.title, false);
+const gcEvent = (path: string, title = path) => gcCount(path.slice(0, 200), title.slice(0, 200), true);
+const gcValue = (x: unknown) =>
+  x === undefined || x === null || x === "" ? "(cleared)" : typeof x === "string" ? x : JSON.stringify(x);
+
+// Both the givens and the view state arrive once when a frame mounts; that
+// first report is where the reader started, not a click, so it only sets the
+// baseline. After it, each changed key is one event — held back 1.5 s so a
+// search box typed into counts once, with what was finally typed.
+const gcSeen = new Map<string, Record<string, unknown>>();
+const gcTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function gcChanges(view: string, kind: "filter" | "view", next: Record<string, unknown>) {
+  const key = `${view}|${kind}`;
+  const prev = gcSeen.get(key);
+  gcSeen.set(key, next);
+  if (!prev) return;
+  for (const k of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    if (JSON.stringify(prev[k]) === JSON.stringify(next[k])) continue;
+    const t = `${key}|${k}`;
+    clearTimeout(gcTimers.get(t));
+    gcTimers.set(t, setTimeout(() => gcEvent(`${kind} · ${view} · ${k} = ${gcValue(next[k])}`), 1500));
+  }
+}
+
+// Clicks inside a dashboard's frame (same origin, so the shell can listen):
+// links out by host, everything else by the control's own label.
+function gcWatchFrame(name: string, frame: HTMLIFrameElement) {
+  frame.addEventListener("load", () => {
+    frame.contentDocument?.addEventListener(
+      "click",
+      (e) => {
+        const el = (e.target as Element).closest?.("a[href], button");
+        if (!el) return;
+        const href = el.tagName === "A" ? (el as HTMLAnchorElement).href : "";
+        if (href && new URL(href).host !== location.host) {
+          gcEvent(`outbound · ${new URL(href).host}`, href);
+          return;
+        }
+        const label = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 80);
+        if (label) gcEvent(`click · ${name} · ${label}`);
+      },
+      true
+    );
+  });
+}
+
 function createView(name: string, search: string): View {
   const frame = document.createElement("iframe");
+  gcWatchFrame(name, frame);
   frame.title = byName.get(name)!.title;
   // the games reports copy a game's link from inside the frame
   frame.allow = "clipboard-write";
@@ -304,6 +367,7 @@ function go(name: string) {
   const search = searchOf(views.get(name));
   history.pushState({ route: name }, "", urlFor(name, search));
   show(name, search);
+  gcPageView(name);
 }
 
 // Nav and home-page links switch views in place. Modified clicks (new tab,
@@ -321,6 +385,7 @@ document.addEventListener("click", (e) => {
 window.addEventListener("popstate", () => {
   show(routeOf(location), location.search);
   syncAddressBar();
+  gcPageView(current);
 });
 
 // ── the frames' half of the runtime's postMessage protocol ──────────
@@ -345,11 +410,13 @@ window.addEventListener("message", async (e) => {
     return;
   }
   if (m.type === "givens" && m.givens) {
+    gcChanges(v.name, "filter", m.givens);
     v.givens = m.givens;
     if (v.name === current) syncAddressBar();
     return;
   }
   if (m.type === "urlstate" && m.state) {
+    gcChanges(v.name, "view", m.state);
     v.urlState = m.state;
     if (v.name === current) syncAddressBar();
     return;
@@ -361,10 +428,13 @@ window.addEventListener("message", async (e) => {
     if (old) {
       old.frame.remove();
       views.delete(m.dashboard);
+      gcSeen.delete(`${m.dashboard}|filter`);
+      gcSeen.delete(`${m.dashboard}|view`);
     }
     const search = shareSearch({ givens: m.givens || {} });
     history.pushState({ route: m.dashboard }, "", urlFor(m.dashboard, search));
     show(m.dashboard, search);
+    gcPageView(m.dashboard);
   }
 });
 
