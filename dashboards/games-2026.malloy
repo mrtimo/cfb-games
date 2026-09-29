@@ -60,6 +60,9 @@ query: games_2026 is games -> {
     away_line_scores is AwayLineScores
     away_pregame_elo is AwayPregameElo
     away_seed is `Playoff AwaySeed`
+    // team colors (hex), for the name underline; empty when CFBD has none
+    away_color1 is away_team_info.color1
+    away_color2 is away_team_info.color2
     home_team is HomeTeam
     home_conference is HomeConference
     home_classification is HomeClassification
@@ -67,6 +70,8 @@ query: games_2026 is games -> {
     home_line_scores is HomeLineScores
     home_pregame_elo is HomePregameElo
     home_seed is `Playoff HomeSeed`
+    home_color1 is home_team_info.color1
+    home_color2 is home_team_info.color2
 
     // ---- how it went ----
     victory_margin

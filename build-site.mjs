@@ -162,9 +162,10 @@ async function compileModel() {
 
 const modelJson = await compileModel();
 
-// The parquet the setupSQL reads over https: the page downloads each whole,
-// registers it under its URL, then runs the setupSQL against those bytes.
-const dataFiles = [...new Set(setupSQL.match(/https:\/\/[^'"\s]+\.parquet/g) || [])];
+// The files the setupSQL reads over https (the parquet, plus the team-colors
+// CSV): the page downloads each whole, registers it under its URL, then runs
+// the setupSQL against those bytes.
+const dataFiles = [...new Set(setupSQL.match(/https:\/\/[^'"\s]+\.(?:parquet|csv)/g) || [])];
 if (!dataFiles.length) throw new Error("no parquet URLs found in malloy-config.json's setupSQL");
 
 // ---- 4: esbuild --------------------------------------------------------

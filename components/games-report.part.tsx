@@ -239,7 +239,34 @@ function periodCells(line: any, played: boolean) {
   return { reg, ot: ot.length ? String(ot.reduce((s, p) => s + (Number(p) || 0), 0)) : null };
 }
 
-function Scoreboard({ g }: { g: any }) {
+/** A team name underlined in its colors — the ones its scoring drives are
+    drawn in. "two" splits the line into four alternating quarters; a faint
+    second color (white, silver) is outlined in the main one, as on the chart. */
+function TeamName({ name, color1, color2, colors, style }: {
+  name: string; color1: any; color2: any; colors: DriveColors; style: React.CSSProperties;
+}) {
+  const stripes = colors !== "plain" ? teamStripes({ offense_color1: color1, offense_color2: color2 }) : null;
+  if (!stripes) return <span style={style}>{name}</span>;
+  const segs = colors === "two" ? [0, 1, 0, 1].map((k) => stripes[k]) : [stripes[0]];
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", verticalAlign: "bottom" }}>
+      <span style={style}>{name}</span>
+      <span style={{ display: "flex", height: 3, marginTop: 1 }} aria-hidden="true">
+        {segs.map((c, i) => (
+          <span
+            key={i}
+            style={{
+              flex: 1, background: c,
+              boxShadow: contrastOnWhite(c) < FAINT ? `inset 0 0 0 1px ${stripes[0]}` : undefined,
+            }}
+          />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function Scoreboard({ g, colors }: { g: any; colors: DriveColors }) {
   const played = isPlayed(g);
   const winner = winnerOf(g);
   const away = periodCells(g.away_line_scores, played);
@@ -249,8 +276,8 @@ function Scoreboard({ g }: { g: any }) {
 
   const cell: React.CSSProperties = { padding: "3px 0", width: 26, textAlign: "center", color: MUTED, fontSize: 12 };
   const rows = [
-    { team: g.away_team, conf: g.away_conference, pts: g.away_points, seed: g.away_seed, line: away },
-    { team: g.home_team, conf: g.home_conference, pts: g.home_points, seed: g.home_seed, line: home },
+    { team: g.away_team, conf: g.away_conference, pts: g.away_points, seed: g.away_seed, line: away, c1: g.away_color1, c2: g.away_color2 },
+    { team: g.home_team, conf: g.home_conference, pts: g.home_points, seed: g.home_seed, line: home, c1: g.home_color1, c2: g.home_color2 },
   ];
 
   return (
@@ -276,9 +303,13 @@ function Scoreboard({ g }: { g: any }) {
                 {r.seed != null && (
                   <span style={{ fontSize: 10.5, color: MUTED, marginRight: 5 }}>#{r.seed}</span>
                 )}
-                <span style={{ fontSize: 15, fontWeight: won ? 700 : played ? 500 : 600, color: played && !won ? INK_2 : INK }}>
-                  {r.team}
-                </span>
+                <TeamName
+                  name={r.team}
+                  color1={r.c1}
+                  color2={r.c2}
+                  colors={colors}
+                  style={{ fontSize: 15, fontWeight: won ? 700 : played ? 500 : 600, color: played && !won ? INK_2 : INK }}
+                />
                 {r.conf && <span style={{ fontSize: 11, color: MUTED, marginLeft: 7 }}>{r.conf}</span>}
               </td>
               {hasLines && r.line!.reg.map((p: string, j: number) => <td key={j} style={cell}>{p}</td>)}
@@ -424,7 +455,7 @@ function TeamLinks({ g, team, onPick, dashboardName }: {
 // the chart also carries a text label, so this is a convenience rather
 // than the only way to read it.
 const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
-  { color: NAVY, label: "Touchdown" },
+  { color: NAVY, label: "Touchdown" },   // relabelled below when team colors are on (and Field goal folded in)
   { color: BLUE, label: "Field goal" },
   { color: ORANGE, label: "Drive lost yardage" },
   { color: GREY, label: "Punt, turnover or clock — a turnover's label is orange" },
@@ -433,7 +464,8 @@ const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] 
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
 ];
 
-function DriveLegend() {
+function DriveLegend({ colors }: { colors: DriveColors }) {
+  const teamColors = colors !== "plain";
   return (
     <div
       style={{
@@ -442,7 +474,7 @@ function DriveLegend() {
         padding: "8px 12px", marginTop: 8, color: INK,
       }}
     >
-      {LEGEND.map((item) => (
+      {LEGEND.filter((item) => !(teamColors && item.label === "Field goal")).map((item) => (
         <span key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
           <svg width="20" height="10" aria-hidden="true">
             <line
@@ -453,7 +485,11 @@ function DriveLegend() {
               strokeLinecap="round"
             />
           </svg>
-          {item.label}
+          {item.label === "Touchdown" && teamColors
+            ? colors === "one"
+              ? "Touchdown or field goal — in the offense's main color; the label says which (navy / blue when a team has none)"
+              : "Touchdown or field goal — in the offense's colors, changing every 10 yards; the label says which (navy / blue when a team has none)"
+            : item.label}
         </span>
       ))}
       <span style={{ fontSize: 11, color: MUTED }}>
@@ -463,13 +499,14 @@ function DriveLegend() {
   );
 }
 
-function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashboardName }: {
+function GameCard({ g, drives, drivesError, focusTeam, orient, colors, onPickTeam, dashboardName }: {
   g: any;
   /** This game's drives: undefined while they load, [] when the feed has none. */
   drives?: any[];
   drivesError?: string | null;
   focusTeam?: string;
   orient: DriveOrient;
+  colors: DriveColors;
   onPickTeam: (t: string) => void;
   dashboardName?: string;
 }) {
@@ -504,7 +541,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashb
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 28px", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 360px", minWidth: 0 }}>
-          <Scoreboard g={g} />
+          <Scoreboard g={g} colors={colors} />
           {g.notes && <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>{g.notes}</div>}
         </div>
         <div style={{ flex: "0 1 210px", minWidth: 150 }}>
@@ -538,6 +575,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashb
                   game={{ home_team: g.home_team, away_team: g.away_team, rows: drives }}
                   focusTeam={focusTeam}
                   orient={orient}
+                  colors={colors}
                 />
               ) : (
                 <div style={{ fontSize: 12, color: MUTED }}>No drive data for this game.</div>
@@ -606,6 +644,7 @@ export default function Dashboard({ dashboard, givens }: any) {
   const [sort, setSort] = useUrlState("sort", "kickoff");
   const [orient, setOrient] = useUrlState("orient", "up");
   const [legend, setLegend] = useUrlState("legend", true);
+  const [colors, setColors] = useUrlState("colors", "one");
   // set by a shared link: show that one game out of the filtered list
   const [sharedGame, setSharedGame] = useUrlState("game", "");
   const [shown, setShown] = useState(PAGE_SIZE);
@@ -698,6 +737,17 @@ export default function Dashboard({ dashboard, givens }: any) {
             hint={orient === "default" ? "Home team drives down" : "The field turns over as needed"}
           />
         )}
+        <ViewSelect
+          label="Colors"
+          value={colors}
+          onChange={setColors}
+          options={[
+            { value: "plain", text: "Plain" },
+            { value: "one", text: "One Color" },
+            { value: "two", text: "Two Colors" },
+          ]}
+          hint=""
+        />
       </Controls>
 
       {!list.loading && !list.error && (
@@ -739,7 +789,7 @@ export default function Dashboard({ dashboard, givens }: any) {
               {legend ? "Hide drive chart legend" : "Show drive chart legend"}
             </button>
           </div>
-          {legend && <DriveLegend />}
+          {legend && <DriveLegend colors={colors as DriveColors} />}
         </>
       )}
 
@@ -780,6 +830,7 @@ export default function Dashboard({ dashboard, givens }: any) {
               drivesError={drivesError}
               focusTeam={team || undefined}
               orient={orient as DriveOrient}
+              colors={colors as DriveColors}
               onPickTeam={pickTeam}
               dashboardName={dashboard?.name}
             />

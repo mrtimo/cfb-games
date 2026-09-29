@@ -140,6 +140,49 @@ const labelColor = (d: any) => {
   return isGiveaway(d) ? ORANGE : MUTED;
 };
 
+// ---- team colors -----------------------------------------------------
+// A scoring drive (touchdown or field goal) is painted in the offense's
+// colors, unless the reader picked plain colors or CFBD has none:
+//   "one"  the main color, a solid line (the default)
+//   "two"  the two colors alternating every 10 yards of the FIELD (the 20-30
+//          band is always the same color, in every game)
+// The TD / FG label is what tells the two results apart.
+
+/** WCAG contrast of a #rrggbb color against the chart's white field. */
+const contrastOnWhite = (hex: string) => {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  return 1.05 / (lum + 0.05);
+};
+const isHex = (v: any) => /^#[0-9a-fA-F]{6}$/.test(String(v || ""));
+// below this a color all but vanishes on white — a white or silver jersey color
+const FAINT = 1.6;
+
+/** The offense's [main, second] colors for a touchdown drive, or null for the
+    plain navy. The main color is always one that shows on white; a faint
+    second color (white is the common one) is drawn outlined in the main. */
+const teamStripes = (d: any): [string, string] | null => {
+  let c1 = isHex(d.offense_color1) ? String(d.offense_color1) : "";
+  let c2 = isHex(d.offense_color2) ? String(d.offense_color2) : "";
+  if (!c1) return null;
+  if (contrastOnWhite(c1) < FAINT) [c1, c2] = [c2, c1];
+  if (!c1 || contrastOnWhite(c1) < FAINT) return null;
+  return [c1, c2 || c1];
+};
+
+/** Split a run of the field into its 10-yard bands: [from, to, band] in
+    field yard lines, band counting up from the away team's goal line. */
+const tenYardBands = (a: number, b: number): [number, number, number][] => {
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  const out: [number, number, number][] = [];
+  for (let k = Math.floor(lo / 10); k * 10 < hi; k++) {
+    const from = Math.max(lo, k * 10), to = Math.min(hi, k * 10 + 10);
+    if (to > from) out.push([from, to, k]);
+  }
+  return out;
+};
+
 /** Seconds of game clock as m:ss. */
 const fmtClock = (secs: any) => {
   const s = Number(secs);
@@ -173,11 +216,13 @@ function routePath(pts: [number, number][], r = 7) {
 //  The chart
 // =====================================================================
 export type DriveOrient = "up" | "down" | "default";
+export type DriveColors = "plain" | "one" | "two";
 
 export function DriveChart({
   game,
   focusTeam,
   orient = "up",
+  colors = "one",
 }: {
   game: any;
   /** The team the reader picked, whose possessions get pointed a chosen way. */
@@ -185,6 +230,9 @@ export function DriveChart({
   /** Which way the picked team drives: up, down, or "default" for the
       fixed convention — home attacks down in every game. */
   orient?: DriveOrient;
+  /** How scoring drives are colored: the chart's own navy / blue ("plain"),
+      the offense's main color ("one"), or its two colors alternating ("two"). */
+  colors?: DriveColors;
 }) {
   const [hover, setHover] = useState<{ d: any; x: number; y: number } | null>(null);
 
@@ -405,6 +453,7 @@ export function DriveChart({
           const y1 = yFor(Number(d.start_yardline));
           const y2 = yFor(Number(d.end_yardline));
           const color = driveColor(d);
+          const stripes = colors !== "plain" && (d.result_category === "Touchdown" || d.result_category === "Field goal") ? teamStripes(d) : null;
           const scored = Number(d.drive_points) > 0;
           // A return touchdown belongs to the OTHER team, so it is drawn as
           // its own line to the goal line that team was attacking, a step to
@@ -457,11 +506,26 @@ export function DriveChart({
                   IS the return, filed under the kicking team. */}
               {!kickoffReturn && (
                 <>
-                  <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
+                  {stripes ? (
+                    // the offense's colors, a band at a time; a faint band
+                    // (white, silver) sits on a slightly wider main-color line
+                    tenYardBands(Number(d.start_yardline), Number(d.end_yardline)).map(([from, to, k]) => {
+                      const c = colors === "one" || k % 2 === 0 ? stripes[0] : stripes[1];
+                      const faint = contrastOnWhite(c) < FAINT;
+                      return (
+                        <g key={k}>
+                          {faint && <line x1={x} y1={yFor(from)} x2={x} y2={yFor(to)} stroke={stripes[0]} strokeWidth={4.5} />}
+                          <line x1={x} y1={yFor(from)} x2={x} y2={yFor(to)} stroke={c} strokeWidth={faint ? 2.2 : 2.5} />
+                        </g>
+                      );
+                    })
+                  ) : (
+                    <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
+                  )}
                   {/* only the END of the possession gets a dot: the line's own
                       start is clear enough, and two sizes of dot per drive made
                       a chart of twenty possessions hard to read */}
-                  <circle cx={x} cy={y2} r={4.2} fill={color} />
+                  <circle cx={x} cy={y2} r={4.2} fill={stripes ? stripes[0] : color} />
                 </>
               )}
               {/* The other team's touchdown, carried to the goal line THAT
@@ -884,7 +948,34 @@ function periodCells(line: any, played: boolean) {
   return { reg, ot: ot.length ? String(ot.reduce((s, p) => s + (Number(p) || 0), 0)) : null };
 }
 
-function Scoreboard({ g }: { g: any }) {
+/** A team name underlined in its colors — the ones its scoring drives are
+    drawn in. "two" splits the line into four alternating quarters; a faint
+    second color (white, silver) is outlined in the main one, as on the chart. */
+function TeamName({ name, color1, color2, colors, style }: {
+  name: string; color1: any; color2: any; colors: DriveColors; style: React.CSSProperties;
+}) {
+  const stripes = colors !== "plain" ? teamStripes({ offense_color1: color1, offense_color2: color2 }) : null;
+  if (!stripes) return <span style={style}>{name}</span>;
+  const segs = colors === "two" ? [0, 1, 0, 1].map((k) => stripes[k]) : [stripes[0]];
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", verticalAlign: "bottom" }}>
+      <span style={style}>{name}</span>
+      <span style={{ display: "flex", height: 3, marginTop: 1 }} aria-hidden="true">
+        {segs.map((c, i) => (
+          <span
+            key={i}
+            style={{
+              flex: 1, background: c,
+              boxShadow: contrastOnWhite(c) < FAINT ? `inset 0 0 0 1px ${stripes[0]}` : undefined,
+            }}
+          />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function Scoreboard({ g, colors }: { g: any; colors: DriveColors }) {
   const played = isPlayed(g);
   const winner = winnerOf(g);
   const away = periodCells(g.away_line_scores, played);
@@ -894,8 +985,8 @@ function Scoreboard({ g }: { g: any }) {
 
   const cell: React.CSSProperties = { padding: "3px 0", width: 26, textAlign: "center", color: MUTED, fontSize: 12 };
   const rows = [
-    { team: g.away_team, conf: g.away_conference, pts: g.away_points, seed: g.away_seed, line: away },
-    { team: g.home_team, conf: g.home_conference, pts: g.home_points, seed: g.home_seed, line: home },
+    { team: g.away_team, conf: g.away_conference, pts: g.away_points, seed: g.away_seed, line: away, c1: g.away_color1, c2: g.away_color2 },
+    { team: g.home_team, conf: g.home_conference, pts: g.home_points, seed: g.home_seed, line: home, c1: g.home_color1, c2: g.home_color2 },
   ];
 
   return (
@@ -921,9 +1012,13 @@ function Scoreboard({ g }: { g: any }) {
                 {r.seed != null && (
                   <span style={{ fontSize: 10.5, color: MUTED, marginRight: 5 }}>#{r.seed}</span>
                 )}
-                <span style={{ fontSize: 15, fontWeight: won ? 700 : played ? 500 : 600, color: played && !won ? INK_2 : INK }}>
-                  {r.team}
-                </span>
+                <TeamName
+                  name={r.team}
+                  color1={r.c1}
+                  color2={r.c2}
+                  colors={colors}
+                  style={{ fontSize: 15, fontWeight: won ? 700 : played ? 500 : 600, color: played && !won ? INK_2 : INK }}
+                />
                 {r.conf && <span style={{ fontSize: 11, color: MUTED, marginLeft: 7 }}>{r.conf}</span>}
               </td>
               {hasLines && r.line!.reg.map((p: string, j: number) => <td key={j} style={cell}>{p}</td>)}
@@ -1069,7 +1164,7 @@ function TeamLinks({ g, team, onPick, dashboardName }: {
 // the chart also carries a text label, so this is a convenience rather
 // than the only way to read it.
 const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] = [
-  { color: NAVY, label: "Touchdown" },
+  { color: NAVY, label: "Touchdown" },   // relabelled below when team colors are on (and Field goal folded in)
   { color: BLUE, label: "Field goal" },
   { color: ORANGE, label: "Drive lost yardage" },
   { color: GREY, label: "Punt, turnover or clock — a turnover's label is orange" },
@@ -1078,7 +1173,8 @@ const LEGEND: { color: string; dash?: boolean; dot?: boolean; label: string }[] 
   { color: KO_GREY, dash: true, label: "Kickoff (KO) and change of possession" },
 ];
 
-function DriveLegend() {
+function DriveLegend({ colors }: { colors: DriveColors }) {
+  const teamColors = colors !== "plain";
   return (
     <div
       style={{
@@ -1087,7 +1183,7 @@ function DriveLegend() {
         padding: "8px 12px", marginTop: 8, color: INK,
       }}
     >
-      {LEGEND.map((item) => (
+      {LEGEND.filter((item) => !(teamColors && item.label === "Field goal")).map((item) => (
         <span key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
           <svg width="20" height="10" aria-hidden="true">
             <line
@@ -1098,7 +1194,11 @@ function DriveLegend() {
               strokeLinecap="round"
             />
           </svg>
-          {item.label}
+          {item.label === "Touchdown" && teamColors
+            ? colors === "one"
+              ? "Touchdown or field goal — in the offense's main color; the label says which (navy / blue when a team has none)"
+              : "Touchdown or field goal — in the offense's colors, changing every 10 yards; the label says which (navy / blue when a team has none)"
+            : item.label}
         </span>
       ))}
       <span style={{ fontSize: 11, color: MUTED }}>
@@ -1108,13 +1208,14 @@ function DriveLegend() {
   );
 }
 
-function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashboardName }: {
+function GameCard({ g, drives, drivesError, focusTeam, orient, colors, onPickTeam, dashboardName }: {
   g: any;
   /** This game's drives: undefined while they load, [] when the feed has none. */
   drives?: any[];
   drivesError?: string | null;
   focusTeam?: string;
   orient: DriveOrient;
+  colors: DriveColors;
   onPickTeam: (t: string) => void;
   dashboardName?: string;
 }) {
@@ -1149,7 +1250,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashb
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 28px", alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 360px", minWidth: 0 }}>
-          <Scoreboard g={g} />
+          <Scoreboard g={g} colors={colors} />
           {g.notes && <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>{g.notes}</div>}
         </div>
         <div style={{ flex: "0 1 210px", minWidth: 150 }}>
@@ -1183,6 +1284,7 @@ function GameCard({ g, drives, drivesError, focusTeam, orient, onPickTeam, dashb
                   game={{ home_team: g.home_team, away_team: g.away_team, rows: drives }}
                   focusTeam={focusTeam}
                   orient={orient}
+                  colors={colors}
                 />
               ) : (
                 <div style={{ fontSize: 12, color: MUTED }}>No drive data for this game.</div>
@@ -1251,6 +1353,7 @@ export default function Dashboard({ dashboard, givens }: any) {
   const [sort, setSort] = useUrlState("sort", "kickoff");
   const [orient, setOrient] = useUrlState("orient", "up");
   const [legend, setLegend] = useUrlState("legend", true);
+  const [colors, setColors] = useUrlState("colors", "one");
   // set by a shared link: show that one game out of the filtered list
   const [sharedGame, setSharedGame] = useUrlState("game", "");
   const [shown, setShown] = useState(PAGE_SIZE);
@@ -1343,6 +1446,17 @@ export default function Dashboard({ dashboard, givens }: any) {
             hint={orient === "default" ? "Home team drives down" : "The field turns over as needed"}
           />
         )}
+        <ViewSelect
+          label="Colors"
+          value={colors}
+          onChange={setColors}
+          options={[
+            { value: "plain", text: "Plain" },
+            { value: "one", text: "One Color" },
+            { value: "two", text: "Two Colors" },
+          ]}
+          hint=""
+        />
       </Controls>
 
       {!list.loading && !list.error && (
@@ -1384,7 +1498,7 @@ export default function Dashboard({ dashboard, givens }: any) {
               {legend ? "Hide drive chart legend" : "Show drive chart legend"}
             </button>
           </div>
-          {legend && <DriveLegend />}
+          {legend && <DriveLegend colors={colors as DriveColors} />}
         </>
       )}
 
@@ -1425,6 +1539,7 @@ export default function Dashboard({ dashboard, givens }: any) {
               drivesError={drivesError}
               focusTeam={team || undefined}
               orient={orient as DriveOrient}
+              colors={colors as DriveColors}
               onPickTeam={pickTeam}
               dashboardName={dashboard?.name}
             />

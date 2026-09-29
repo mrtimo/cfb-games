@@ -35,6 +35,12 @@ source: games is games_base extend {
   #(doc) How many drives the feed has for this game.
   join_one: drive_counts is game_drive_counts on Id = drive_counts.GameId
 
+  #(doc) The home team's conference and team colors.
+  join_one: home_team_info is team_colors on HomeTeam = home_team_info.team
+
+  #(doc) The away team's conference and team colors.
+  join_one: away_team_info is team_colors on AwayTeam = away_team_info.team
+
   dimension:
 
     #(doc) True when this game has drive-by-drive detail, so a drive chart can be drawn. Division I games have it; Division II and III games do not.
@@ -62,6 +68,9 @@ source: drives is drives_base extend {
 
   #(doc) The game this drive was played in, with its date, teams, venue and final score.
   join_one: game is games_base on GameId = game.Id
+
+  #(doc) The offense's conference and team colors.
+  join_one: offense_team is team_colors on Offense = offense_team.team
 
   dimension:
 
@@ -107,6 +116,10 @@ source: drives is drives_base extend {
       special_teams_score_type
       home_score_after
       away_score_after
+      // the offense's two main colors (hex), for its touchdown drives;
+      // empty when CFBD has none, and the chart falls back to its own
+      offense_color1 is offense_team.color1
+      offense_color2 is offense_team.color2
     order_by: drive_number
   }
 }

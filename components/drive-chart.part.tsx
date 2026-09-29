@@ -132,6 +132,49 @@ const labelColor = (d: any) => {
   return isGiveaway(d) ? ORANGE : MUTED;
 };
 
+// ---- team colors -----------------------------------------------------
+// A scoring drive (touchdown or field goal) is painted in the offense's
+// colors, unless the reader picked plain colors or CFBD has none:
+//   "one"  the main color, a solid line (the default)
+//   "two"  the two colors alternating every 10 yards of the FIELD (the 20-30
+//          band is always the same color, in every game)
+// The TD / FG label is what tells the two results apart.
+
+/** WCAG contrast of a #rrggbb color against the chart's white field. */
+const contrastOnWhite = (hex: string) => {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  const lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  return 1.05 / (lum + 0.05);
+};
+const isHex = (v: any) => /^#[0-9a-fA-F]{6}$/.test(String(v || ""));
+// below this a color all but vanishes on white — a white or silver jersey color
+const FAINT = 1.6;
+
+/** The offense's [main, second] colors for a touchdown drive, or null for the
+    plain navy. The main color is always one that shows on white; a faint
+    second color (white is the common one) is drawn outlined in the main. */
+const teamStripes = (d: any): [string, string] | null => {
+  let c1 = isHex(d.offense_color1) ? String(d.offense_color1) : "";
+  let c2 = isHex(d.offense_color2) ? String(d.offense_color2) : "";
+  if (!c1) return null;
+  if (contrastOnWhite(c1) < FAINT) [c1, c2] = [c2, c1];
+  if (!c1 || contrastOnWhite(c1) < FAINT) return null;
+  return [c1, c2 || c1];
+};
+
+/** Split a run of the field into its 10-yard bands: [from, to, band] in
+    field yard lines, band counting up from the away team's goal line. */
+const tenYardBands = (a: number, b: number): [number, number, number][] => {
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  const out: [number, number, number][] = [];
+  for (let k = Math.floor(lo / 10); k * 10 < hi; k++) {
+    const from = Math.max(lo, k * 10), to = Math.min(hi, k * 10 + 10);
+    if (to > from) out.push([from, to, k]);
+  }
+  return out;
+};
+
 /** Seconds of game clock as m:ss. */
 const fmtClock = (secs: any) => {
   const s = Number(secs);
@@ -165,11 +208,13 @@ function routePath(pts: [number, number][], r = 7) {
 //  The chart
 // =====================================================================
 export type DriveOrient = "up" | "down" | "default";
+export type DriveColors = "plain" | "one" | "two";
 
 export function DriveChart({
   game,
   focusTeam,
   orient = "up",
+  colors = "one",
 }: {
   game: any;
   /** The team the reader picked, whose possessions get pointed a chosen way. */
@@ -177,6 +222,9 @@ export function DriveChart({
   /** Which way the picked team drives: up, down, or "default" for the
       fixed convention — home attacks down in every game. */
   orient?: DriveOrient;
+  /** How scoring drives are colored: the chart's own navy / blue ("plain"),
+      the offense's main color ("one"), or its two colors alternating ("two"). */
+  colors?: DriveColors;
 }) {
   const [hover, setHover] = useState<{ d: any; x: number; y: number } | null>(null);
 
@@ -397,6 +445,7 @@ export function DriveChart({
           const y1 = yFor(Number(d.start_yardline));
           const y2 = yFor(Number(d.end_yardline));
           const color = driveColor(d);
+          const stripes = colors !== "plain" && (d.result_category === "Touchdown" || d.result_category === "Field goal") ? teamStripes(d) : null;
           const scored = Number(d.drive_points) > 0;
           // A return touchdown belongs to the OTHER team, so it is drawn as
           // its own line to the goal line that team was attacking, a step to
@@ -449,11 +498,26 @@ export function DriveChart({
                   IS the return, filed under the kicking team. */}
               {!kickoffReturn && (
                 <>
-                  <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
+                  {stripes ? (
+                    // the offense's colors, a band at a time; a faint band
+                    // (white, silver) sits on a slightly wider main-color line
+                    tenYardBands(Number(d.start_yardline), Number(d.end_yardline)).map(([from, to, k]) => {
+                      const c = colors === "one" || k % 2 === 0 ? stripes[0] : stripes[1];
+                      const faint = contrastOnWhite(c) < FAINT;
+                      return (
+                        <g key={k}>
+                          {faint && <line x1={x} y1={yFor(from)} x2={x} y2={yFor(to)} stroke={stripes[0]} strokeWidth={4.5} />}
+                          <line x1={x} y1={yFor(from)} x2={x} y2={yFor(to)} stroke={c} strokeWidth={faint ? 2.2 : 2.5} />
+                        </g>
+                      );
+                    })
+                  ) : (
+                    <line x1={x} y1={y1} x2={x} y2={y2} stroke={color} strokeWidth={2.5} strokeLinecap="round" />
+                  )}
                   {/* only the END of the possession gets a dot: the line's own
                       start is clear enough, and two sizes of dot per drive made
                       a chart of twenty possessions hard to read */}
-                  <circle cx={x} cy={y2} r={4.2} fill={color} />
+                  <circle cx={x} cy={y2} r={4.2} fill={stripes ? stripes[0] : color} />
                 </>
               )}
               {/* The other team's touchdown, carried to the goal line THAT

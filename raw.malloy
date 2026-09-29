@@ -31,6 +31,17 @@ source: games_raw is duckdb.table('cfb_games')
 #(doc) Every drive of every season in the feed, one row per possession, exactly as CFBD publishes it.
 source: drives_raw is duckdb.table('cfb_drives')
 
+#|(doc)
+  One row per team: its 2026 conference and its two main colors as hex values (color1 the
+  primary, color2 the secondary), from CFBD's /teams feed via teams-2026.csv at Hugging Face.
+  Colors are empty for teams CFBD has none for, including those it lists as plain black with
+  no second color, which is its placeholder. The drive charts paint a team's touchdown drives
+  in these colors.
+|#
+source: team_colors is duckdb.table('cfb_team_colors') extend {
+  primary_key: team
+}
+
 // ---------------------------------------------------------------------
 //  TEAM-GAMES — each game twice, once from each team's side.
 //
