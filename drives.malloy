@@ -398,7 +398,7 @@ extend {
       pick 'Safety' when DriveResult = 'SF'
       else 'Uncategorized'
 
-    #(doc) Short label for how the drive ended, for drive charts: TD, FG, P for punt, FGA for a missed field goal attempt, Int, Fum, Downs, S for safety, Def TD, Half when the first half ran out, Game End when the game ran out, 2PT for a converted overtime two-point attempt and Miss for one that failed, and Other.
+    #(doc) Short label for how the drive ended, for drive charts: TD, FG, P for punt, FGA for a missed field goal attempt, Int, Fum, Downs, S for safety, Def TD, Half when the first half ran out, End when the game ran out, 2PT for a converted overtime two-point attempt and Miss for one that failed, and Other.
     result_abbreviation is
       // Short on purpose. These land in adjacent columns 30px apart, so a
       // label wider than its column collides with its neighbour.
@@ -407,8 +407,10 @@ extend {
       pick 'ST TD' when result_category = 'Special teams touchdown'
       pick 'Def TD' when result_category = 'Defensive touchdown'
       // the clock running out on the game reads very differently from it
-      // running out on the first half, so name them apart
-      pick 'Game End' when result_category = 'End of period' and possessions.drives_left_in_game = 1
+      // running out on the first half, so name them apart. The feed leaves
+      // ~370 final possessions (victory formation, a last kneel) with no
+      // result at all; on the game's last drive that is the clock, too.
+      pick 'End' when (result_category ? 'End of period' | 'Uncategorized') and possessions.drives_left_in_game = 1
       pick 'Half' when result_category = 'End of period'
       pick 'TD' when result_category = 'Touchdown'
       pick 'FG' when result_category = 'Field goal'

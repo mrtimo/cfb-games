@@ -27,7 +27,7 @@ const MUTED = "#9aa0a6";
 const RULE = "#d7dade";
 
 // ---- layout --------------------------------------------------------
-const COL = 30;          // per possession — tight, so a whole game fits
+const COL = 35;          // per possession — room between lines, still a game fits
 const HALF_GAP = 34;     // the break between halves
 const REG_GAP = 40;      // the break before overtime; its label stacks to fit
 const LABEL_W = 96;      // ledger row labels down the left
@@ -36,7 +36,8 @@ const PLOT_PAD = 26;     // room for the opening kickoff, which is routed
                          // in from the LEFT of the first possession
 const FINAL_W = 46;      // the "Final" column
 const FIELD_H = 300;
-const FIELD_TOP = 26;
+const END_ZONE_H = 32;   // the end zones above and below the field
+const FIELD_TOP = 8 + END_ZONE_H;
 const LEDGER_TOP_PAD = 16;
 const ROW_H = 21;
 const RETURN_DX = 10;    // a return touchdown sits this far right of the possession
@@ -235,10 +236,20 @@ export function DriveChart({
   colors?: DriveColors;
 }) {
   const [hover, setHover] = useState<{ d: any; x: number; y: number } | null>(null);
+  // unique per chart, so each card's end-zone stripe pattern is its own
+  const patternId = useMemo(() => Math.random().toString(36).slice(2, 9), []);
 
   const drives = game.rows;
   const home = game.home_team;
   const away = game.away_team;
+  // a team's colors for its end-zone name, read off any of its drives
+  const colorsOf = (team: string) => {
+    if (colors === "plain") return null;
+    const d = drives.find((r: any) => sameTeam(r.offense, team) && !r.is_kickoff_return_touchdown);
+    return d ? teamStripes(d) : null;
+  };
+  const homeColors = colorsOf(home);
+  const awayColors = colorsOf(away);
 
   // WHICH WAY IS UP.
   //
@@ -282,7 +293,7 @@ export function DriveChart({
     LABEL_W + AXIS_W + PLOT_PAD + drives.length * COL +
     gapBefore(drives.length) + FINAL_W + AXIS_W;
   const fieldBottom = FIELD_TOP + FIELD_H;
-  const ledgerTop = fieldBottom + LEDGER_TOP_PAD;
+  const ledgerTop = fieldBottom + END_ZONE_H + LEDGER_TOP_PAD;
   const height = ledgerTop + ROW_H * 4 + 14;
 
   // ---- kickoffs and the dashed routing between possessions ----------
@@ -417,11 +428,66 @@ export function DriveChart({
           </g>
         ))}
 
-        {/* which way each team is driving, at its own end of the field */}
-        <text x={LABEL_W + AXIS_W - 2} y={yFor(12)} fontSize={10.5} fill={MUTED}
-          stroke="#fff" strokeWidth={3} paintOrder="stroke">{home} {flip ? "↑" : "↓"}</text>
-        <text x={LABEL_W + AXIS_W - 2} y={yFor(90)} fontSize={10.5} fill={MUTED}
-          stroke="#fff" strokeWidth={3} paintOrder="stroke">{away} {flip ? "↓" : "↑"}</text>
+        {/* The end zones. Each carries the name of the team ATTACKING it —
+            the home team attacks 100, the away team 0 — so the names say
+            which way each offense drives, and yFor turns them over with the
+            rest of the chart. */}
+        <defs>
+          <pattern id={`ez-${patternId}`} patternUnits="userSpaceOnUse" width={12} height={12} patternTransform="rotate(-45)">
+            <line x1={0} y1={0} x2={12} y2={0} stroke="#dfe2e6" strokeWidth={1} />
+          </pattern>
+        </defs>
+        {[
+          { team: home, goal: yFor(100), colors: homeColors },
+          { team: away, goal: yFor(0), colors: awayColors },
+        ].map(({ team, goal, colors: tc }) => {
+          const top = goal <= FIELD_TOP + 0.5;
+          const y = top ? goal - END_ZONE_H : goal;
+          const x0 = LABEL_W + AXIS_W - 8;
+          const w = width - AXIS_W - x0;
+          // letters spread over at most half the end zone, set toward its
+          // outer edge so a TD label on the goal line stays clear
+          const chars = team.toUpperCase().split("");
+          const span = Math.min(w * 0.5, Math.max(chars.length * 16, w * 0.25));
+          const start = x0 + w / 2 - span / 2;
+          const textY = y + END_ZONE_H * (top ? 0.42 : 0.6);
+          return (
+            <g key={team}>
+              <rect x={x0} y={y} width={w} height={END_ZONE_H} fill="#fff" />
+              <rect x={x0} y={y} width={w} height={END_ZONE_H} fill={`url(#ez-${patternId})`} />
+              {chars.map((ch, i) =>
+                ch === " " ? null : (
+                  <text
+                    key={i}
+                    x={start + (span / chars.length) * (i + 0.5)}
+                    y={textY}
+                    dy="0.35em"
+                    textAnchor="middle"
+                    fontSize={16}
+                    fontWeight={900}
+                    fill={tc ? tc[0] : NAVY}
+                    fillOpacity={tc ? 0.55 : 0.32}
+                  >
+                    {ch}
+                  </text>
+                )
+              )}
+            </g>
+          );
+        })}
+        <line x1={LABEL_W + AXIS_W - 8} y1={FIELD_TOP - END_ZONE_H} x2={width - AXIS_W} y2={FIELD_TOP - END_ZONE_H} stroke={RULE} strokeWidth={1} />
+        <line x1={LABEL_W + AXIS_W - 8} y1={fieldBottom + END_ZONE_H} x2={width - AXIS_W} y2={fieldBottom + END_ZONE_H} stroke={RULE} strokeWidth={1} />
+
+        {/* halftime: a light dashed line through the break, goal line to
+            goal line (it stops short of the end zones' lettering) */}
+        {halfX !== null && (
+          <g>
+            <line x1={halfX} y1={FIELD_TOP} x2={halfX} y2={fieldBottom}
+              stroke="#c3c8cf" strokeWidth={1} strokeDasharray="4 4" />
+            <text x={halfX} y={FIELD_TOP + FIELD_H / 2 + 3.5} textAnchor="middle" fontSize={10.5} fontWeight={600}
+              fill={MUTED} stroke="#fff" strokeWidth={4} paintOrder="stroke">Half</text>
+          </g>
+        )}
 
         {/* dashed routing and kickoff markers, behind the possessions */}
         {links.map((l, i) => (
@@ -557,7 +623,7 @@ export function DriveChart({
                   </text>
                 </g>
               )}
-              {!kickoffReturn && (
+              {!kickoffReturn && possessionLabel !== "Half" && (
                 <text
                   x={x + 7}
                   y={y2 + 3.5}
