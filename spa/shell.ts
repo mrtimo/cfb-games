@@ -63,32 +63,133 @@ const modelP = fetch(new URL(SITE.model, siteBase))
     return def;
   });
 
-const dataP = Promise.all(
-  (SITE.dataFiles as string[]).map(async (url) => {
+// ── the data, cached in the browser ─────────────────────────────────
+// Hugging Face can't be cached by the browser on its own: /resolve/ answers
+// with a no-store redirect to a freshly signed CDN URL every time. So the
+// shell keeps each file in Cache Storage under its git blob id, read from the
+// repo's tree listing (one small JSON request), and only downloads a file
+// whose id has changed — new data still appears with no rebuild. If the
+// listing can't be read it uses whatever copy it has; if Cache Storage is
+// unavailable (some private windows) it just downloads, as before.
+const DATA_CACHE = "cfb-data-v1";
+const HF_FILE = /^https:\/\/huggingface\.co\/datasets\/([^/]+\/[^/]+)\/resolve\/([^/]+)\/(.+)$/;
+
+async function fileVersions(urls: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const repos = new Map<string, { rev: string; files: Map<string, string> }>();
+  for (const url of urls) {
+    const m = url.match(HF_FILE);
+    if (!m) continue;
+    const key = `${m[1]}@${m[2]}`;
+    if (!repos.has(key)) repos.set(key, { rev: m[2], files: new Map() });
+    repos.get(key)!.files.set(m[3], url);
+  }
+  await Promise.all(
+    [...repos].map(async ([key, { rev, files }]) => {
+      const repo = key.split("@")[0];
+      try {
+        const r = await fetch(`https://huggingface.co/api/datasets/${repo}/tree/${rev}`, { cache: "no-store" });
+        if (!r.ok) return;
+        for (const f of (await r.json()) as { path: string; oid: string }[]) {
+          const url = files.get(f.path);
+          if (url && f.oid) out.set(url, f.oid);
+        }
+      } catch {
+        // offline or blocked: fall back to whatever is cached
+      }
+    })
+  );
+  return out;
+}
+
+async function loadFile(url: string, version: string | undefined, cache: Cache | null) {
+  const download = async () => {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${url}: ${r.status} ${r.statusText}`);
-    return [url, new Uint8Array(await r.arrayBuffer())] as const;
-  })
-).then((files) => {
+    return new Uint8Array(await r.arrayBuffer());
+  };
+  if (!cache) return { bytes: await download(), fromCache: false };
+  const keys = (await cache.keys()).filter((k) => k.url.split("?v=")[0] === url);
+  const wanted = version ? `${url}?v=${version}` : null;
+  // the current version, or — when the listing couldn't be read — any copy
+  const hit = keys.find((k) => (wanted ? k.url === wanted : true));
+  if (hit) {
+    const r = await cache.match(hit);
+    if (r) return { bytes: new Uint8Array(await r.arrayBuffer()), fromCache: true };
+  }
+  const bytes = await download();
+  if (wanted) {
+    try {
+      await cache.put(wanted, new Response(bytes));
+      for (const k of keys) if (k.url !== wanted) await cache.delete(k);
+    } catch {
+      // storage full or refused: the page still has the bytes
+    }
+  }
+  return { bytes, fromCache: false };
+}
+
+const dataP = (async () => {
+  const urls = SITE.dataFiles as string[];
+  let cache: Cache | null = null;
+  try {
+    cache = await caches.open(DATA_CACHE);
+  } catch {
+    cache = null;
+  }
+  const versions = cache ? await fileVersions(urls) : new Map<string, string>();
+  const files = await Promise.all(
+    urls.map(async (url) => {
+      const { bytes, fromCache } = await loadFile(url, versions.get(url), cache);
+      return [url, bytes, fromCache] as const;
+    })
+  );
   const mb = files.reduce((n, [, b]) => n + b.byteLength, 0) / 1048576;
-  log(`data downloaded (${files.length} parquet files, ${mb.toFixed(1)} MB)`);
-  return files;
-});
+  const cached = files.filter(([, , c]) => c).length;
+  log(`data ready (${files.length} files, ${mb.toFixed(1)} MB; ${cached} from the browser cache, ${files.length - cached} downloaded)`);
+  return files.map(([url, bytes]) => [url, bytes] as const);
+})();
 
 const connectionP = (async () => {
   const connection = new CdnDuckDB({ name: "duckdb" });
   await connection.connecting;
   log("DuckDB-WASM started");
+  // DuckDB-WASM fetches these extensions from its repository the first time
+  // a query needs one — parquet for the setupSQL, icu for time zones, json
+  // for Malloy — one at a time, each in the path of a query. Load them now.
+  const t = performance.now();
+  const db = (connection as any).database;
+  await Promise.all(
+    ["parquet", "icu", "json"].map(async (ext) => {
+      const c = await db.connect();
+      try {
+        await c.query(`LOAD ${ext}`);
+      } catch (e) {
+        console.warn(`[cfb] LOAD ${ext} failed — it will autoload instead`, e);
+      } finally {
+        await c.close();
+      }
+    })
+  );
+  log(`extensions loaded (${ms(t)} ms)`);
   return connection;
 })();
 
 const modelReady = (async () => {
   const [def, files, connection] = await Promise.all([modelP, dataP, connectionP]);
   const db = (connection as any).database;
-  // Registered under the URL itself: the model's SQL reads
-  // read_parquet(['https://…']), and DuckDB-WASM resolves a registered name
-  // before it would ever go to the network.
-  for (const [url, bytes] of files) await db.registerFileBuffer(url, bytes);
+  // Registered under a PLAIN local name, and the setupSQL's https URLs
+  // rewritten to match. Registered under the https URL itself, DuckDB-WASM
+  // still treats the file as remote: each read cost ~240 ms against ~20 ms
+  // under a plain name, with the bytes already in memory — most of the
+  // seconds this step used to take on a cold start.
+  const localName = (url: string, i: number) => `data_${i}_${url.split("/").pop()!.replace(/[^\w.]/g, "_")}`;
+  let setupSQL = String(SITE.setupSQL || "");
+  for (const [i, [url, bytes]] of files.entries()) {
+    const name = localName(url, i);
+    await db.registerFileBuffer(name, bytes);
+    setupSQL = setupSQL.split(url).join(name);
+  }
   // Decode the parquet ONCE, into the cfb_games / cfb_drives tables the
   // model reads — the same setupSQL the local connection runs (from
   // malloy-config.json). Reading parquet costs ~0.4 s per scan in
@@ -96,8 +197,10 @@ const modelReady = (async () => {
   // and the drive model scans its data several times per query.
   const loadStart = performance.now();
   const setup = await db.connect();
-  for (const statement of String(SITE.setupSQL || "").split(";").map((s) => s.trim()).filter(Boolean)) {
+  for (const statement of setupSQL.split(";").map((s) => s.trim()).filter(Boolean)) {
+    const t = performance.now();
     await setup.query(statement);
+    log(`  ${statement.match(/TABLE\s+(\w+)/i)?.[1] ?? "setup"} (${ms(t)} ms)`);
   }
   await setup.close();
   log(`tables loaded (${ms(loadStart)} ms)`);
@@ -266,7 +369,37 @@ function chosenGivens(name: string, givens: Record<string, unknown>) {
 }
 const searchOf = (v?: View) => (v ? shareSearch({ givens: chosenGivens(v.name, v.givens), urlState: v.urlState }) : "");
 const urlFor = (name: string, search: string) =>
-  (name ? new URL(`${encodeURIComponent(name)}.html`, siteBase).pathname : siteBase.pathname) + search;
+  (name ? new URL(`${encodeURIComponent(name)}.html`, siteBase).pathname : siteBase.pathname) + toPublic(search);
+
+// ── readable links ──────────────────────────────────────────────────
+// Inside, the runtime keeps two namespaces in the query string: `$TEAM`
+// for a given, `~sort` for view-state — which a browser shows as %24TEAM
+// and %7Esort. The address bar uses plain names instead (team=Oregon,
+// sort=latest) and the shell translates at the edge: toPublic on every
+// address it writes, fromPublic on every one it reads. Old links in the
+// $/~ form still open as they are.
+const PUBLIC_ALIAS: Record<string, string> = { GAME_WEEK: "week" };
+const publicKey = (given: string) => PUBLIC_ALIAS[given] ?? given.toLowerCase();
+function toPublic(search: string) {
+  const out = new URLSearchParams();
+  for (const [k, v] of new URLSearchParams(search)) {
+    out.set(k.charAt(0) === "$" ? publicKey(k.slice(1)) : k.charAt(0) === "~" ? k.slice(1) : k, v);
+  }
+  const s = out.toString();
+  return s ? "?" + s : "";
+}
+function fromPublic(name: string, search: string) {
+  const names: string[] = (byName.get(name) as any)?.givens ?? [];
+  const given = new Map(names.map((n) => [publicKey(n), n]));
+  const out = new URLSearchParams();
+  for (const [k, v] of new URLSearchParams(search)) {
+    if (k.charAt(0) === "$" || k.charAt(0) === "~") out.set(k, v);
+    else if (given.has(k)) out.set("$" + given.get(k), v);
+    else out.set("~" + k, v);
+  }
+  const s = out.toString();
+  return s ? "?" + s : "";
+}
 
 // ── GoatCounter ─────────────────────────────────────────────────────
 // count.js (in the page head) counts the first page load. Everything the
@@ -360,11 +493,30 @@ function show(name: string, search: string) {
   document.querySelectorAll<HTMLAnchorElement>(".dash-nav a[data-route]").forEach((a) => {
     a.classList.toggle("on", a.dataset.route === name && name !== "");
   });
-  document.title = dashboard
-    ? `${dashboard.title} · ${SITE.title}`
-    : name === "about"
-      ? `About · ${SITE.title}`
-      : SITE.title;
+  document.title = pageTitle(name);
+  updateCanonical(name);
+}
+
+/** On a dashboard the canonical address is the page plus the picked team —
+    the team is what makes it a different page; sort, colors and the rest are
+    the same page viewed another way. */
+function updateCanonical(name: string) {
+  const link = document.querySelector<HTMLLinkElement>('link[rel="canonical"][data-dynamic]');
+  if (!link || !byName.has(name)) return;
+  const team = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  const u = new URL(`${encodeURIComponent(name)}.html`, link.href);
+  if (team) u.search = "?" + new URLSearchParams({ team }).toString();
+  link.href = u.href;
+}
+
+/** The tab title: the picked team first, when there is one — it is what the
+    page is about, and what a search result or a bookmark should say. */
+function pageTitle(name: string) {
+  const dashboard: any = byName.get(name);
+  if (!dashboard) return SITE.pageTitles?.[name] ?? SITE.title;
+  const base = dashboard.pageTitle ?? `${dashboard.title} · ${SITE.title}`;
+  const team = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  return team ? `${team} · ${base}` : base;
 }
 
 /** The address bar follows the visible dashboard's own state. */
@@ -395,7 +547,7 @@ document.addEventListener("click", (e) => {
 // alive it comes back as it was left, and the address bar is corrected to
 // that state; if not, it starts from the URL.
 window.addEventListener("popstate", () => {
-  show(routeOf(location), location.search);
+  show(routeOf(location), fromPublic(routeOf(location), location.search));
   syncAddressBar();
   gcPageView(current);
 });
@@ -424,7 +576,11 @@ window.addEventListener("message", async (e) => {
   if (m.type === "givens" && m.givens) {
     gcChanges(v.name, "filter", m.givens);
     v.givens = m.givens;
-    if (v.name === current) syncAddressBar();
+    if (v.name === current) {
+      syncAddressBar();
+      document.title = pageTitle(v.name);
+      updateCanonical(v.name);
+    }
     return;
   }
   if (m.type === "urlstate" && m.state) {
@@ -452,5 +608,7 @@ window.addEventListener("message", async (e) => {
 
 // ── first paint ─────────────────────────────────────────────────────
 const first = routeOf(location);
-show(first, location.search);
-history.replaceState({ route: first }, "", location.pathname + location.search);
+const firstSearch = fromPublic(first, location.search);
+show(first, firstSearch);
+// an old $/~ link is rewritten to the readable form straight away
+history.replaceState({ route: first }, "", isPage(first) || !first ? location.pathname + location.search : urlFor(first, firstSearch));

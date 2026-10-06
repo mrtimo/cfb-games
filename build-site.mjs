@@ -48,6 +48,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, "docs");
 const stageDir = path.join(here, ".build");
 const TITLE = "College Football Games";
+// where GitHub Pages serves docs/ — for canonical links, the sitemap and the
+// link-preview tags, which all need absolute URLs
+const SITE_URL = "https://mrtimo.github.io/cfb-games/";
+const AUTHOR = { name: "Tim Olsen", url: "https://www.linkedin.com/in/4timolsen/", affiliation: "Gonzaga School of Business" };
 
 // ---- the installed malloyyo CLI ----------------------------------------
 const bin = execFileSync("which", ["malloyyo"]).toString().trim();
@@ -157,10 +161,19 @@ async function compileModel() {
     if (a !== b) throw new Error(`model.json compiles ${name} to different SQL than its dashboard file does`);
   }
   console.log(`  verified ${checks.size} queries against model.json in ${Date.now() - t} ms`);
-  return json;
+
+  // FBS teams per season, for the home page's "browse by team" links
+  const { rows } = await connection.runSQL(`
+    SELECT season, team, conference FROM (
+      SELECT Season AS season, HomeTeam AS team, HomeConference AS conference, HomeClassification AS cls FROM cfb_games
+      UNION ALL
+      SELECT Season, AwayTeam, AwayConference, AwayClassification FROM cfb_games)
+    WHERE cls = 'fbs' AND team IS NOT NULL
+    GROUP BY ALL ORDER BY season DESC, conference, team`, { rowLimit: 100000 });
+  return { json, teams: rows };
 }
 
-const modelJson = await compileModel();
+const { json: modelJson, teams } = await compileModel();
 
 // The files the setupSQL reads over https (the parquet, plus the team-colors
 // CSV): the page downloads each whole, registers it under its URL, then runs
@@ -295,6 +308,17 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .index .about-list a{display:inline;padding:0;border:0;border-radius:0;background:none;color:var(--accent);text-decoration:none}
 .index .about-list a:hover{text-decoration:underline}
 .about-note{max-width:660px;font-size:14px;line-height:1.6;color:var(--muted);margin:10px 0 0}
+/* browse by team: plain links, grouped by conference */
+.browse{margin-top:34px;max-width:980px}
+.browse h2{font-size:17px;margin:0 0 10px}
+.browse details{margin:0 0 12px}
+.browse summary{cursor:pointer;font-weight:600;font-size:14px;padding:4px 0}
+.browse .confs{columns:3 260px;column-gap:28px;margin-top:8px}
+.browse .conf{break-inside:avoid;margin:0 0 12px}
+.browse h3{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 3px;font-weight:600}
+.browse p{margin:0;font-size:13px;line-height:1.7}
+.index .browse a{display:inline;padding:0;border:0;border-radius:0;background:none;color:var(--accent);text-decoration:none}
+.index .browse a:hover{text-decoration:underline}
 `;
 
 // Cache busting. Only the shared chunk carries a content hash in its name;
@@ -319,7 +343,7 @@ const site = {
   setupSQL,
   // `opening`: the givens each dashboard starts from, so the shell can leave
   // them out of the address bar (games-2026.html already means SEASON=2026)
-  dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "", opening: openingGivens(d) })),
+  dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "", opening: openingGivens(d), givens: d.givens.map((s) => s.name) })),
 };
 
 const link = (href, text) => `<a href="${href}" target="_blank" rel="noreferrer noopener">${text}</a>`;
@@ -334,13 +358,127 @@ const ABOUT_HTML = `<div id="about" class="home" hidden><main class="index">
 </ul>
 </main></div>`;
 
-const shellHtml = `<!doctype html>
+// ---- page metadata (search engines and link previews) ------------------
+const PAGES = {
+  "": {
+    title: "College Football Drive Charts — 2025 & 2026 Games",
+    description:
+      "Every 2025 and 2026 college football game as a drive chart: every possession, the line score and a thrill index, plus team rankings by drive efficiency. Free, and it runs in your browser.",
+  },
+  about: {
+    title: `About · ${TITLE}`,
+    description: "Where the data comes from, the drive-chart design it builds on, and who made the College Football Games site.",
+  },
+  "games-2026": {
+    title: "2026 College Football Games & Drive Charts",
+    description:
+      "Every 2026 college football game with its line score, thrill index and a drive chart of every possession. Filter by team, conference or week; sort by the most exciting games.",
+  },
+  "games-2025": {
+    title: "2025 College Football Games & Drive Charts",
+    description:
+      "Every 2025 college football game with its line score, thrill index and a drive chart of every possession. Filter by team, conference or week; sort by the most exciting games.",
+  },
+  "team-rankings": {
+    title: "College Football Team Rankings — Drive Efficiency, Elo & Strength of Schedule",
+    description:
+      "Every FBS team ranked by record, scoring margin, points per drive, yards per play, three-and-out and turnover rates, Elo and strength of schedule.",
+  },
+};
+const pageMeta = (name) => {
+  const d = dashboards.find((x) => x.name === name);
+  return PAGES[name] ?? { title: `${d?.info.title || name} · ${TITLE}`, description: d?.info.description || PAGES[""].description };
+};
+const pagePath = (name) => (name ? `${name}.html` : "");
+// the shell retitles the tab as the reader moves around; give it these
+for (const d of site.dashboards) d.pageTitle = pageMeta(d.name).title;
+site.pageTitles = { "": PAGES[""].title, about: PAGES.about.title };
+const OG_IMAGE = fs.existsSync(path.join(here, "og-image.png")) ? `${SITE_URL}assets/og-image.png` : null;
+if (OG_IMAGE) fs.copyFileSync(path.join(here, "og-image.png"), path.join(out, "assets", "og-image.png"));
+
+const jsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      name: TITLE,
+      url: SITE_URL,
+      description: PAGES[""].description,
+      author: {
+        "@type": "Person",
+        name: AUTHOR.name,
+        url: AUTHOR.url,
+        affiliation: { "@type": "Organization", name: AUTHOR.affiliation },
+      },
+    },
+    {
+      "@type": "Dataset",
+      name: "College football games and drives, 2025–2026",
+      description:
+        "Game results, line scores and drive-by-drive possessions for every 2025 and 2026 college football game, with a thrill index and drive-efficiency measures, explorable as drive charts.",
+      url: SITE_URL,
+      keywords: ["college football", "drive chart", "CFB", "sports analytics", "FBS", "Malloy"],
+      creator: { "@type": "Person", name: AUTHOR.name, url: AUTHOR.url },
+      isBasedOn: "https://collegefootballdata.com/",
+      temporalCoverage: "2025/2026",
+    },
+  ],
+}).replace(/</g, "\\u003c");
+
+// ---- browse by team: plain links a crawler can follow -------------------
+const teamLinks = (season) => {
+  const rows = teams.filter((r) => Number(r.season) === season);
+  const byConf = new Map();
+  for (const r of rows) {
+    const c = r.conference || "Independent";
+    if (!byConf.has(c)) byConf.set(c, []);
+    byConf.get(c).push(r.team);
+  }
+  return [...byConf]
+    .map(
+      ([conf, list]) =>
+        `<div class="conf"><h3>${esc(conf)}</h3><p>${list
+          .map((t) => `<a href="./games-${season}.html?team=${encodeURIComponent(t).replace(/%20/g, "+")}">${esc(t)}</a>`)
+          .join(" · ")}</p></div>`
+    )
+    .join("");
+};
+const seasons = [...new Set(teams.map((r) => Number(r.season)))].sort((a, b) => b - a);
+const BROWSE_HTML = seasons.length
+  ? `<section class="browse"><h2>Browse a team's season</h2>${seasons
+      .map(
+        (s, i) =>
+          `<details${i === 0 ? " open" : ""}><summary>${s} FBS teams</summary><div class="confs">${teamLinks(s)}</div></details>`
+      )
+      .join("")}</section>`
+  : "";
+
+const shellHtml = (name) => {
+  const meta = pageMeta(name);
+  const url = SITE_URL + pagePath(name);
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(TITLE)}</title>
-<meta name="description" content="College football games, drive charts and team rankings for the 2025 and 2026 seasons, from a Malloy model queried in your browser with DuckDB-WASM.">
+<title>${esc(meta.title)}</title>
+<meta name="description" content="${esc(meta.description)}">
+<meta name="author" content="${esc(AUTHOR.name)}">
+<link rel="canonical" href="${esc(url)}"${dashboards.some((d) => d.name === name) ? ` data-dynamic` : ""}>
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="${esc(TITLE)}">
+<meta property="og:title" content="${esc(meta.title)}">
+<meta property="og:description" content="${esc(meta.description)}">
+<meta property="og:url" content="${esc(url)}">
+${OG_IMAGE ? `<meta property="og:image" content="${OG_IMAGE}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A college football drive chart: every possession of a game drawn up and down the field, with the teams' names in the end zones">` : ""}
+<meta name="twitter:card" content="${OG_IMAGE ? "summary_large_image" : "summary"}">
+<meta name="twitter:title" content="${esc(meta.title)}">
+<meta name="twitter:description" content="${esc(meta.description)}">
+${OG_IMAGE ? `<meta name="twitter:image" content="${OG_IMAGE}">` : ""}
+<script type="application/ld+json">${jsonLd}</script>
 ${ICON}
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://huggingface.co" crossorigin>
@@ -354,16 +492,19 @@ ${ICON}
 <body class="shell">
 <nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home">${HOME_ICON}</a><span class="sep"></span>${site.dashboards
   .map((d) => `<a href="./${encodeURIComponent(d.name)}.html" data-route="${esc(d.name)}">${esc(d.title)}</a>`)
-  .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span><span class="credit">Built by <a href="https://www.linkedin.com/in/4timolsen/" target="_blank" rel="noopener">Tim Olsen</a><span class="school">· Gonzaga School of Business</span></span></nav>
+  .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span><span class="credit">Built by <a href="${AUTHOR.url}" target="_blank" rel="noopener">${esc(AUTHOR.name)}</a><span class="school">· ${esc(AUTHOR.affiliation)}</span></span></nav>
 <div id="stage" class="stage">
-<div id="home" class="home"><main class="index"><h1>${esc(TITLE)}</h1><ul>${site.dashboards
+<div id="home" class="home"><main class="index"><h1>${esc(TITLE)}</h1>
+<p class="about-note">Every game of the 2025 and 2026 college football seasons as a drive chart — every possession drawn up and down the field — with the line score, a thrill index for the most exciting games, and team rankings by drive efficiency.</p>
+<ul>${site.dashboards
   .map(
     (d) =>
       `<li><a href="./${encodeURIComponent(d.name)}.html" data-route="${esc(d.name)}"><strong>${esc(d.title)}</strong>${
         d.description ? `<span>${esc(d.description)}</span>` : ""
       }</a></li>`
   )
-  .join("")}</ul></main></div>
+  .join("")}</ul>
+${BROWSE_HTML}</main></div>
 ${ABOUT_HTML}
 </div>
 <script>window.__SITE__ = ${safeJson(site)};</script>
@@ -371,12 +512,13 @@ ${ABOUT_HTML}
 </body>
 </html>
 `;
+};
 
-fs.writeFileSync(path.join(out, "index.html"), shellHtml);
+fs.writeFileSync(path.join(out, "index.html"), shellHtml(""));
 // the About page is the shell too — the file name is what routes it
-fs.writeFileSync(path.join(out, "about.html"), shellHtml);
+fs.writeFileSync(path.join(out, "about.html"), shellHtml("about"));
 for (const d of dashboards) {
-  fs.writeFileSync(path.join(out, `${d.name}.html`), shellHtml);
+  fs.writeFileSync(path.join(out, `${d.name}.html`), shellHtml(d.name));
   fs.writeFileSync(
     path.join(out, "frames", `${d.name}.html`),
     `<!doctype html>
@@ -385,6 +527,7 @@ for (const d of dashboards) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(d.info.title || d.name)}</title>
+<meta name="robots" content="noindex">
 <link rel="stylesheet" href="../assets/site.css?v=${v.css}">
 </head>
 <body>
@@ -399,6 +542,26 @@ window.__GIVENS__ = ${safeJson(d.givens)};
 `
   );
 }
+
+// ---- sitemap ---------------------------------------------------------------
+// GitHub Pages serves this project under /cfb-games/, and crawlers only read a
+// robots.txt at the host's root — so no robots.txt here; submit the sitemap in
+// Google Search Console instead.
+const today = new Date().toISOString().slice(0, 10);
+const sitemapUrls = [
+  "",
+  ...dashboards.map((d) => pagePath(d.name)),
+  "about.html",
+  ...teams.map((r) => `games-${r.season}.html?team=${encodeURIComponent(r.team).replace(/%20/g, "+")}`),
+];
+fs.writeFileSync(
+  path.join(out, "sitemap.xml"),
+  `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${[...new Set(sitemapUrls)].map((u) => `  <url><loc>${esc(SITE_URL + u)}</loc><lastmod>${today}</lastmod></url>`).join("\n")}
+</urlset>
+`
+);
 // GitHub Pages would otherwise run the output through Jekyll
 fs.writeFileSync(path.join(out, ".nojekyll"), "");
 

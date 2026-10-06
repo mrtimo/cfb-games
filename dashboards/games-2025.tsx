@@ -836,15 +836,18 @@ const possessive = (name: string) => `${name}${/s$/i.test(name) ? "'" : "'s"}`;
  */
 const shareUrlFor = (dashboardName: string | undefined, gameId: any) => {
   let url: URL;
+  // the published shell's address bar uses plain names (game=…); a frame's
+  // own query string keeps the runtime's `~` view-state prefix
+  let key = "game";
   try {
     url = new URL(window.parent !== window ? window.parent.location.href : location.href);
   } catch {
     url = new URL(`../${dashboardName || ""}.html`, location.href);
     url.search = location.search;
+    key = "~game";
   }
-  // `~` is the runtime's view-state namespace, so opening this link lands on
-  // this one game with every filter the reader had set.
-  url.searchParams.set("~game", String(Number(gameId)));
+  // opening this link lands on this one game with every filter the reader had set
+  url.searchParams.set(key, String(Number(gameId)));
   return url.toString();
 };
 
