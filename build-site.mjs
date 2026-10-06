@@ -278,6 +278,11 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .dash-nav .status i{width:7px;height:7px;border-radius:50%;background:#eda100;flex:none}
 .dash-nav .status.ready i{background:#1baf7a}
 .dash-nav .status.failed i{background:#e34948}
+/* who made it, after the status pill at the right end of the nav */
+.dash-nav .credit{display:flex;align-items:center;gap:5px;color:#9aa1ac;font-size:12px;padding:0 4px 0 10px;margin-left:6px;border-left:1px solid #2c3038;white-space:nowrap}
+.dash-nav .credit a{padding:0;border-radius:0;background:none;color:#e6e9ee;font-weight:550}
+.dash-nav .credit a:hover{background:none;color:#fff;text-decoration:underline}
+@media (max-width:700px){.dash-nav .credit .school{display:none}}
 .stage{position:relative;flex:1;min-height:0}
 .stage>iframe{position:absolute;inset:0;width:100%;height:100%;border:0;visibility:hidden;background:var(--bg)}
 .stage>iframe.on{visibility:visible}
@@ -312,7 +317,9 @@ const site = {
   model: `assets/model.json?v=${v.model}`,
   dataFiles,
   setupSQL,
-  dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "" })),
+  // `opening`: the givens each dashboard starts from, so the shell can leave
+  // them out of the address bar (games-2026.html already means SEASON=2026)
+  dashboards: dashboards.map((d) => ({ name: d.name, title: d.info.title || d.name, description: d.info.description || "", opening: openingGivens(d) })),
 };
 
 const link = (href, text) => `<a href="${href}" target="_blank" rel="noreferrer noopener">${text}</a>`;
@@ -347,7 +354,7 @@ ${ICON}
 <body class="shell">
 <nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home">${HOME_ICON}</a><span class="sep"></span>${site.dashboards
   .map((d) => `<a href="./${encodeURIComponent(d.name)}.html" data-route="${esc(d.name)}">${esc(d.title)}</a>`)
-  .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span></nav>
+  .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span><span class="credit">Built by <a href="https://www.linkedin.com/in/4timolsen/" target="_blank" rel="noopener">Tim Olsen</a><span class="school">· Gonzaga School of Business</span></span></nav>
 <div id="stage" class="stage">
 <div id="home" class="home"><main class="index"><h1>${esc(TITLE)}</h1><ul>${site.dashboards
   .map(

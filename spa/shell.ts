@@ -252,7 +252,19 @@ function routeOf(url: Location | URL) {
   return byName.has(file) || isPage(file) ? file : "";
 }
 
-const searchOf = (v?: View) => (v ? shareSearch({ givens: v.givens, urlState: v.urlState }) : "");
+/** A dashboard's givens minus the ones still at the value it opens with — a
+    pinned season, a default division — so a link carries only what the
+    reader actually chose. Left out, they open at that same value. */
+function chosenGivens(name: string, givens: Record<string, unknown>) {
+  const opening: Record<string, unknown> = (byName.get(name) as any)?.opening ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(givens ?? {})) {
+    if (k in opening && String(opening[k]) === String(v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+const searchOf = (v?: View) => (v ? shareSearch({ givens: chosenGivens(v.name, v.givens), urlState: v.urlState }) : "");
 const urlFor = (name: string, search: string) =>
   (name ? new URL(`${encodeURIComponent(name)}.html`, siteBase).pathname : siteBase.pathname) + search;
 
@@ -431,7 +443,7 @@ window.addEventListener("message", async (e) => {
       gcSeen.delete(`${m.dashboard}|filter`);
       gcSeen.delete(`${m.dashboard}|view`);
     }
-    const search = shareSearch({ givens: m.givens || {} });
+    const search = shareSearch({ givens: chosenGivens(m.dashboard, m.givens || {}) });
     history.pushState({ route: m.dashboard }, "", urlFor(m.dashboard, search));
     show(m.dashboard, search);
     gcPageView(m.dashboard);

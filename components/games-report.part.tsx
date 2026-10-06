@@ -722,7 +722,6 @@ export default function Dashboard({ dashboard, givens }: any) {
         <Given name="TEAM" />
         <Given name="CONFERENCE" />
         <Given name="GAME_WEEK" />
-        <Given name="DIVISION" />
         <ViewSelect label="Sort by" value={sort} onChange={setSort} options={SORTS} hint="" />
         {team && (
           <ViewSelect

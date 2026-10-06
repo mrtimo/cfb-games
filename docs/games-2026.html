@@ -8,8 +8,8 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://huggingface.co" crossorigin>
-<link rel="preload" href="./assets/model.json?v=be7e60d594" as="fetch" crossorigin="anonymous">
-<link rel="modulepreload" href="./assets/shell.js?v=1ebf3fc403">
+<link rel="preload" href="./assets/model.json?v=98c56f9850" as="fetch" crossorigin="anonymous">
+<link rel="modulepreload" href="./assets/shell.js?v=41befe9056">
 <link rel="stylesheet" href="./assets/site.css?v=fce95fc3fe">
 <style>
 html,body{height:100%}
@@ -19,6 +19,11 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 .dash-nav .status i{width:7px;height:7px;border-radius:50%;background:#eda100;flex:none}
 .dash-nav .status.ready i{background:#1baf7a}
 .dash-nav .status.failed i{background:#e34948}
+/* who made it, after the status pill at the right end of the nav */
+.dash-nav .credit{display:flex;align-items:center;gap:5px;color:#9aa1ac;font-size:12px;padding:0 4px 0 10px;margin-left:6px;border-left:1px solid #2c3038;white-space:nowrap}
+.dash-nav .credit a{padding:0;border-radius:0;background:none;color:#e6e9ee;font-weight:550}
+.dash-nav .credit a:hover{background:none;color:#fff;text-decoration:underline}
+@media (max-width:700px){.dash-nav .credit .school{display:none}}
 .stage{position:relative;flex:1;min-height:0}
 .stage>iframe{position:absolute;inset:0;width:100%;height:100%;border:0;visibility:hidden;background:var(--bg)}
 .stage>iframe.on{visibility:visible}
@@ -36,7 +41,7 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
         async src="//gc.zgo.at/count.js"></script>
 </head>
 <body class="shell">
-<nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.2 12 3.5l9 6.7"/><path d="M5.2 8.9V20h13.6V8.9"/><path d="M9.6 20v-6.2h4.8V20"/></svg></a><span class="sep"></span><a href="./games-2025.html" data-route="games-2025">2025 Games</a><a href="./games-2026.html" data-route="games-2026">2026 Games</a><a href="./team-rankings.html" data-route="team-rankings">Team Rankings</a><a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span></nav>
+<nav class="dash-nav"><a class="brand" href="./" data-route="" title="Home" aria-label="Home"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.2 12 3.5l9 6.7"/><path d="M5.2 8.9V20h13.6V8.9"/><path d="M9.6 20v-6.2h4.8V20"/></svg></a><span class="sep"></span><a href="./games-2025.html" data-route="games-2025">2025 Games</a><a href="./games-2026.html" data-route="games-2026">2026 Games</a><a href="./team-rankings.html" data-route="team-rankings">Team Rankings</a><a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span><span class="credit">Built by <a href="https://www.linkedin.com/in/4timolsen/" target="_blank" rel="noopener">Tim Olsen</a><span class="school">· Gonzaga School of Business</span></span></nav>
 <div id="stage" class="stage">
 <div id="home" class="home"><main class="index"><h1>College Football Games</h1><ul><li><a href="./games-2025.html" data-route="games-2025"><strong>2025 Games</strong><span>Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.</span></a></li><li><a href="./games-2026.html" data-route="games-2026"><strong>2026 Games</strong><span>Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.</span></a></li><li><a href="./team-rankings.html" data-route="team-rankings"><strong>Team Rankings</strong><span>Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank.</span></a></li></ul></main></div>
 <div id="about" class="home" hidden><main class="index">
@@ -50,7 +55,7 @@ body.shell{display:flex;flex-direction:column;overflow:hidden}
 </ul>
 </main></div>
 </div>
-<script>window.__SITE__ = {"title":"College Football Games","model":"assets/model.json?v=be7e60d594","dataFiles":["https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/teams-2026.csv"],"setupSQL":"CREATE OR REPLACE TABLE cfb_games AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_drives AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_team_colors AS SELECT * FROM read_csv('https://huggingface.co/datasets/24601p/cfb-data/resolve/main/teams-2026.csv', header = true, all_varchar = true)","dashboards":[{"name":"games-2025","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"games-2026","title":"2026 Games","description":"Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was."},{"name":"team-rankings","title":"Team Rankings","description":"Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank."}]};</script>
-<script type="module" src="./assets/shell.js?v=1ebf3fc403"></script>
+<script>window.__SITE__ = {"title":"College Football Games","model":"assets/model.json?v=98c56f9850","dataFiles":["https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet","https://huggingface.co/datasets/24601p/cfb-data/resolve/main/teams-2026.csv"],"setupSQL":"CREATE OR REPLACE TABLE cfb_games AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/games-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_drives AS SELECT * FROM read_parquet(['https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2025.parquet', 'https://huggingface.co/datasets/24601p/cfb-data/resolve/main/drives-2026.parquet'], union_by_name = true); CREATE OR REPLACE TABLE cfb_team_colors AS SELECT * FROM read_csv('https://huggingface.co/datasets/24601p/cfb-data/resolve/main/teams-2026.csv', header = true, all_varchar = true)","dashboards":[{"name":"games-2025","title":"2025 Games","description":"Every game of the 2025 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.","opening":{"SEASON":"2025","DIVISION":"fbs"}},{"name":"games-2026","title":"2026 Games","description":"Every game of the 2026 season — filter by team, conference or week, and sort by kickoff or by how exciting it was.","opening":{"SEASON":"2026","DIVISION":"fbs"}},{"name":"team-rankings","title":"Team Rankings","description":"Every team ranked on record, scoring and drive efficiency on both sides of the ball. Click a column header to re-rank.","opening":{"SEASON":"2026","DIVISION":"fbs","EXCLUDE_GARBAGE":true}}]};</script>
+<script type="module" src="./assets/shell.js?v=41befe9056"></script>
 </body>
 </html>
