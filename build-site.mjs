@@ -170,16 +170,152 @@ async function compileModel() {
       SELECT Season, AwayTeam, AwayConference, AwayClassification FROM cfb_games)
     WHERE cls = 'fbs' AND team IS NOT NULL
     GROUP BY ALL ORDER BY season DESC, conference, team`, { rowLimit: 100000 });
-  return { json, teams: rows };
+  const prebaked = await prebake(saved);
+  return { json, teams: rows, prebaked };
 }
 
-const { json: modelJson, teams } = await compileModel();
+// ---- 3b: saved answers ---------------------------------------------------
+// The first thing a visitor waits for is DuckDB-WASM itself: a 7 MB download
+// on a first visit, then a few seconds to start. Until it is up, nothing can
+// be queried. So the build runs, natively and from model.json, the queries a
+// page sends when it opens — each games page as it opens (by default, for
+// every team, for every conference), Team Rankings, and the drives of every
+// game — and saves each answer as a small JSON file. The shell answers from
+// these while DuckDB loads, and only while the live data on Hugging Face is
+// still the version the build read (see spa/shell.ts, "saved answers").
+//
+// A request is identified the way the shell sees it: the query text (a named
+// query by its bare name) and the givens the frame sent, keys sorted. A frame
+// sends a dashboard's main query with ALL its givens, and each picker's
+// *_suggest query with all of them except the picker's own — so that is what
+// is generated here. A request nobody predicted is simply run by DuckDB.
+const PREBAKE_VARIANTS = ["TEAM", "CONFERENCE"];
+// A picked value as the picker sends it — malloyyo's filters.oneOf: the plain
+// value when it parses as itself, else escaped ("Miami (OH)" → Miami\ \(OH\)).
+const { StringFilterExpression } = requireFromMalloyyo("@malloydata/malloy-filter");
+function oneOf(value) {
+  const { parsed, log } = StringFilterExpression.parse(value);
+  const clean =
+    parsed && parsed.operator === "=" && !parsed.not && parsed.values?.length === 1 && parsed.values[0] === value &&
+    !(log || []).some((l) => l.severity === "error");
+  return clean ? value : StringFilterExpression.unparse({ operator: "=", values: [value] });
+}
+const NAMED_QUERY = /^\s*(?:run\s*:\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*$/;
+const DRIVE_BATCH = (ids) => `run: drives -> game_drive_chart + { where: GameId ~ f'${ids}' }`;
+/** The shell's key for a request — MUST match canonicalKey in spa/shell.ts. */
+function canonicalKey(text, givens) {
+  const named = NAMED_QUERY.exec(text);
+  const sorted = {};
+  for (const k of Object.keys(givens ?? {}).sort()) sorted[k] = givens[k];
+  return JSON.stringify([named ? named[1] : text, sorted]);
+}
+const keyHash = (key) => crypto.createHash("sha1").update(key, "utf8").digest("hex").slice(0, 16);
+// mirror of malloyyo:shared/json-rows — the rows the shell would send
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+function jsonValue(value) {
+  if (typeof value === "bigint") return value <= MAX_SAFE && value >= -MAX_SAFE ? Number(value) : value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (value !== null && typeof value === "object" && value.constructor === Object) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = jsonValue(v);
+    return out;
+  }
+  return value;
+}
+const jsonRows = (result) => result.data.toObject().map((row) => jsonValue(row));
+
+async function prebake(model) {
+  const t = Date.now();
+  const answers = new Map(); // hash -> rows
+  const ask = async (text, givens) => {
+    const key = canonicalKey(text, givens);
+    const hash = keyHash(key);
+    if (answers.has(hash)) return answers.get(hash);
+    const named = NAMED_QUERY.exec(text);
+    const query = named ? model.loadQueryByName(named[1]) : model.loadQuery(text);
+    const rows = jsonRows(await query.run({ rowLimit: 5000, givens }));
+    answers.set(hash, rows);
+    return rows;
+  };
+  const driveGames = new Set();
+  for (const d of dashboards) {
+    // what the frame sends: every given it knows, at its opening value or empty
+    const opening = openingGivens(d);
+    const base = {};
+    for (const spec of d.givens) base[spec.name] = opening[spec.name] ?? (spec.type === "boolean" ? false : "");
+    const suggests = d.givens.filter((s) => s.suggest?.query);
+    const without = (g, name) => Object.fromEntries(Object.entries(g).filter(([k]) => k !== name));
+    const variants = [base];
+    for (const name of PREBAKE_VARIANTS) {
+      const spec = suggests.find((s) => s.name === name);
+      if (!spec) continue;
+      const values = (await ask(`run: ${spec.suggest.query}`, without(base, name))).map((r) => r[spec.suggest.dimension]);
+      for (const v of values) if (v != null && v !== "") variants.push({ ...base, [name]: oneOf(String(v)) });
+    }
+    for (const g of variants) {
+      const rows = await ask(d.info.query, g);
+      for (const spec of suggests) await ask(`run: ${spec.suggest.query}`, without(g, spec.name));
+      // the games a games report will draw: every drive-charted game it lists
+      if (fs.readFileSync(path.join(here, d.info.entryFile), "utf8").includes("drive-games.malloy")) {
+        for (const r of rows) if (r.has_drive_detail && r.game_id != null) driveGames.add(Number(r.game_id));
+      }
+    }
+  }
+  // Every game's drives in ONE query, split by game. DRIVE_GAMES narrows the
+  // model per game before its windows run, so a game's rows are the same in a
+  // batch of six or of eight hundred — checked below against a real batch.
+  const drives = new Map();
+  if (driveGames.size) {
+    const ids = [...driveGames].join(", ");
+    const rows = jsonRows(await model.loadQuery(DRIVE_BATCH(ids)).run({ rowLimit: 200000, givens: { DRIVE_GAMES: ids } }));
+    for (const id of driveGames) drives.set(id, []);
+    for (const r of rows) drives.get(Number(r.game_id))?.push(r);
+    const sample = [...driveGames].slice(0, 6).join(", ");
+    const small = jsonRows(await model.loadQuery(DRIVE_BATCH(sample)).run({ rowLimit: 5000, givens: { DRIVE_GAMES: sample } }));
+    const fromBig = sample.split(", ").flatMap((id) => drives.get(Number(id)));
+    const norm = (rs) => JSON.stringify([...rs].sort((a, b) => a.game_id - b.game_id || a.drive_number - b.drive_number));
+    if (norm(small) !== norm(fromBig)) throw new Error("prebake: a game's drives differ between a small batch and the full one");
+  }
+  console.log(`  saved ${answers.size} answers and ${drives.size} games' drives in ${Date.now() - t} ms`);
+  return { answers, drives };
+}
+
+const { json: modelJson, teams, prebaked } = await compileModel();
 
 // The files the setupSQL reads over https (the parquet, plus the team-colors
 // CSV): the page downloads each whole, registers it under its URL, then runs
 // the setupSQL against those bytes.
 const dataFiles = [...new Set(setupSQL.match(/https:\/\/[^'"\s]+\.(?:parquet|csv)/g) || [])];
 if (!dataFiles.length) throw new Error("no parquet URLs found in malloy-config.json's setupSQL");
+
+// The Hugging Face version (git blob id) of each data file, as the build read
+// it. The shell uses the saved answers only while the live files still match.
+async function dataVersions(urls) {
+  const out = {};
+  const HF = /^https:\/\/huggingface\.co\/datasets\/([^/]+\/[^/]+)\/resolve\/([^/]+)\/(.+)$/;
+  const repos = new Map();
+  for (const u of urls) {
+    const m = u.match(HF);
+    if (!m) return null; // not all on Hugging Face: no way to check, no saved answers
+    const k = `${m[1]}@${m[2]}`;
+    if (!repos.has(k)) repos.set(k, []);
+    repos.get(k).push([m[3], u]);
+  }
+  for (const [k, files] of repos) {
+    const [repo, rev] = k.split("@");
+    const r = await fetch(`https://huggingface.co/api/datasets/${repo}/tree/${rev}`);
+    if (!r.ok) return null;
+    const oids = new Map((await r.json()).map((f) => [f.path, f.oid]));
+    for (const [p, u] of files) {
+      if (!oids.get(p)) return null;
+      out[u] = oids.get(p);
+    }
+  }
+  return out;
+}
+const builtFrom = await dataVersions(dataFiles);
+if (!builtFrom) console.warn("  ! could not read the data versions — the site will not use saved answers");
 
 // ---- 4: esbuild --------------------------------------------------------
 fs.rmSync(out, { recursive: true, force: true });
@@ -336,8 +472,25 @@ const v = {
   frame: Object.fromEntries(dashboards.map((d) => [d.name, version(`assets/frames/${d.name}.js`)])),
 };
 
+// write the saved answers (after docs/ was emptied above)
+let pre = null;
+if (builtFrom) {
+  fs.mkdirSync(path.join(out, "assets", "pre", "q"), { recursive: true });
+  fs.mkdirSync(path.join(out, "assets", "pre", "d"), { recursive: true });
+  for (const [hash, rows] of prebaked.answers) fs.writeFileSync(path.join(out, "assets", "pre", "q", `${hash}.json`), JSON.stringify(rows));
+  for (const [id, rows] of prebaked.drives) fs.writeFileSync(path.join(out, "assets", "pre", "d", `${id}.json`), JSON.stringify(rows));
+  pre = {
+    // changes whenever the data does, so a browser never mixes builds
+    v: crypto.createHash("sha1").update(JSON.stringify(builtFrom)).digest("hex").slice(0, 10),
+    data: builtFrom,
+    keys: [...prebaked.answers.keys()],
+    drives: [...prebaked.drives.keys()],
+  };
+}
+
 const site = {
   title: TITLE,
+  pre,
   model: `assets/model.json?v=${v.model}`,
   dataFiles,
   setupSQL,

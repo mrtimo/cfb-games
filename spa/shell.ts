@@ -33,6 +33,7 @@ import { DuckDBWASMConnection } from "@malloydata/db-duckdb/wasm";
 import { API, SingleConnectionRuntime } from "@malloydata/malloy";
 import { givensFromSearch, shareSearch, urlStateFromSearch } from "malloyyo:shared/givens-url";
 import { jsonRows } from "malloyyo:shared/json-rows";
+import { StringFilterExpression } from "@malloydata/malloy-filter";
 
 const SITE = window.__SITE__;
 const DASHBOARDS: { name: string; title: string }[] = SITE.dashboards;
@@ -129,6 +130,10 @@ async function loadFile(url: string, version: string | undefined, cache: Cache |
   return { bytes, fromCache: false };
 }
 
+// the live version of each data file — for the data cache AND for deciding
+// whether the build's saved answers still hold
+const versionsP = fileVersions(SITE.dataFiles as string[]);
+
 const dataP = (async () => {
   const urls = SITE.dataFiles as string[];
   let cache: Cache | null = null;
@@ -137,7 +142,7 @@ const dataP = (async () => {
   } catch {
     cache = null;
   }
-  const versions = cache ? await fileVersions(urls) : new Map<string, string>();
+  const versions = await versionsP;
   const files = await Promise.all(
     urls.map(async (url) => {
       const { bytes, fromCache } = await loadFile(url, versions.get(url), cache);
@@ -287,6 +292,64 @@ function schedule<T>(low: boolean, task: () => Promise<T>): Promise<T> {
 const answers = new Map<string, Promise<any>>();
 const MAX_ANSWERS = 400;
 
+// ── saved answers ───────────────────────────────────────────────────
+// The build saves the answers to the queries a page sends when it opens
+// (build-site.mjs, "saved answers"): every games page as it opens — by
+// default, per team, per conference — Team Rankings, and every game's drives,
+// one file per game. While DuckDB-WASM downloads and starts, a request with a
+// saved answer is answered from its file in a few milliseconds.
+//
+// Only while the live data is the data the build read: the Hugging Face blob
+// id of every data file must match the build's. After new data is uploaded
+// and before the site is rebuilt, everything is queried live as before.
+const PRE: { v: string; data: Record<string, string>; keys: string[]; drives: number[] } | null = SITE.pre ?? null;
+const preKeys = new Set(PRE?.keys ?? []);
+const preDrives = new Set(PRE?.drives ?? []);
+const preCurrent: Promise<boolean> = PRE
+  ? versionsP.then((live) => Object.entries(PRE.data).every(([url, oid]) => live.get(url) === oid))
+  : Promise.resolve(false);
+preCurrent.then((ok) => PRE && log(ok ? "saved answers match the live data" : "data changed since the build — querying live"));
+const DRIVE_BATCH = /^\s*run:\s*drives -> game_drive_chart \+ \{ where: GameId ~ f'([\d,\s]+)' \}\s*$/;
+
+/** The shell's key for a request — MUST match canonicalKey in build-site.mjs. */
+function canonicalKey(text: string, givens: Record<string, unknown>) {
+  const named = NAMED.exec(text);
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(givens ?? {}).sort()) sorted[k] = givens[k];
+  return JSON.stringify([named ? named[1] : text, sorted]);
+}
+async function keyHash(key: string) {
+  const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(key));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+const preUrl = (file: string) => new URL(`assets/pre/${file}?v=${PRE!.v}`, siteBase).href;
+async function preJson(file: string) {
+  const r = await fetch(preUrl(file));
+  if (!r.ok) throw new Error(`${file}: ${r.status}`);
+  return r.json();
+}
+
+/** A saved answer for this request, or null to run it. */
+async function savedAnswer(text: string, givens: Record<string, unknown>) {
+  if (!PRE || !(await preCurrent)) return null;
+  try {
+    const batch = DRIVE_BATCH.exec(text);
+    if (batch) {
+      const ids = batch[1].split(",").map((s) => Number(s.trim()));
+      if (!ids.every((id) => preDrives.has(id))) return null;
+      const rows = (await Promise.all(ids.map((id) => preJson(`d/${id}.json`)))).flat();
+      return { ok: true, rows };
+    }
+    if (!crypto?.subtle) return null;
+    const hash = await keyHash(canonicalKey(text, givens));
+    if (!preKeys.has(hash)) return null;
+    return { ok: true, rows: await preJson(`q/${hash}.json`) };
+  } catch (e) {
+    console.warn("[cfb] saved answer unavailable — querying live", e);
+    return null;
+  }
+}
+
 function run(req: { query?: string; malloy?: string }, givens: Record<string, unknown>) {
   const text = (req.malloy ?? req.query ?? "") as string;
   const key = JSON.stringify([text, givens ?? {}]);
@@ -295,7 +358,14 @@ function run(req: { query?: string; malloy?: string }, givens: Record<string, un
     const named = NAMED.exec(text);
     const low = !!named && /_suggest$/.test(named[1]);
     const asked = performance.now();
-    answer = schedule(low, () => execute(text, named, givens, asked));
+    answer = savedAnswer(text, givens).then((saved) => {
+      if (saved) {
+        const label = named ? named[1] : text.replace(/\s+/g, " ").slice(0, 60);
+        console.info(`[cfb] ${label}: ${saved.rows.length} rows from the saved answers in ${ms(asked)} ms`);
+        return saved;
+      }
+      return schedule(low, () => execute(text, named, givens, asked));
+    });
     answers.set(key, answer);
     answer.then((res) => {
       if (!res.ok) answers.delete(key);
@@ -379,11 +449,27 @@ const urlFor = (name: string, search: string) =>
 // address it writes, fromPublic on every one it reads. Old links in the
 // $/~ form still open as they are.
 const PUBLIC_ALIAS: Record<string, string> = { GAME_WEEK: "week" };
+// A given's value is a Malloy filter: a team with filter punctuation in its
+// name travels as Miami\ \(OH\). The address bar shows the plain name, and a
+// plain name that would not parse as a filter is escaped on the way in — the
+// same thing the picker does (malloyyo's filters.oneOf).
+function plainValue(filter: string): string | null {
+  const { parsed, log } = StringFilterExpression.parse(filter);
+  const p = parsed as { operator?: string; not?: boolean; values?: string[] } | null;
+  if (!p || p.operator !== "=" || p.not || p.values?.length !== 1 || (log || []).some((l) => l.severity === "error")) return null;
+  return p.values[0];
+}
+function asFilter(value: string): string {
+  const { parsed, log } = StringFilterExpression.parse(value);
+  if (parsed && !(log || []).some((l) => l.severity === "error")) return value;
+  return StringFilterExpression.unparse({ operator: "=", values: [value] });
+}
 const publicKey = (given: string) => PUBLIC_ALIAS[given] ?? given.toLowerCase();
 function toPublic(search: string) {
   const out = new URLSearchParams();
   for (const [k, v] of new URLSearchParams(search)) {
-    out.set(k.charAt(0) === "$" ? publicKey(k.slice(1)) : k.charAt(0) === "~" ? k.slice(1) : k, v);
+    if (k.charAt(0) === "$") out.set(publicKey(k.slice(1)), plainValue(v) ?? v);
+    else out.set(k.charAt(0) === "~" ? k.slice(1) : k, v);
   }
   const s = out.toString();
   return s ? "?" + s : "";
@@ -394,7 +480,7 @@ function fromPublic(name: string, search: string) {
   const out = new URLSearchParams();
   for (const [k, v] of new URLSearchParams(search)) {
     if (k.charAt(0) === "$" || k.charAt(0) === "~") out.set(k, v);
-    else if (given.has(k)) out.set("$" + given.get(k), v);
+    else if (given.has(k)) out.set("$" + given.get(k), asFilter(v));
     else out.set("~" + k, v);
   }
   const s = out.toString();
@@ -503,7 +589,8 @@ function show(name: string, search: string) {
 function updateCanonical(name: string) {
   const link = document.querySelector<HTMLLinkElement>('link[rel="canonical"][data-dynamic]');
   if (!link || !byName.has(name)) return;
-  const team = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  const raw = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  const team = raw ? plainValue(raw) ?? raw : "";
   const u = new URL(`${encodeURIComponent(name)}.html`, link.href);
   if (team) u.search = "?" + new URLSearchParams({ team }).toString();
   link.href = u.href;
@@ -515,7 +602,8 @@ function pageTitle(name: string) {
   const dashboard: any = byName.get(name);
   if (!dashboard) return SITE.pageTitles?.[name] ?? SITE.title;
   const base = dashboard.pageTitle ?? `${dashboard.title} · ${SITE.title}`;
-  const team = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  const raw = String(views.get(name)?.givens?.TEAM ?? "").trim();
+  const team = raw ? plainValue(raw) ?? raw : "";
   return team ? `${team} · ${base}` : base;
 }
 
