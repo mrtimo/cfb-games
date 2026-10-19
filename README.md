@@ -1,13 +1,14 @@
-# College Football Games — 2025 & 2026
+# College Football Games — 2026
 
 A malloyyo dashboard site built on the 2025 drive-analytics model in the parent folder,
-extended to both seasons. Data is read straight from Hugging Face
+now serving the 2026 season only (2025 was dropped to speed up loading;
+`games-2025.html` redirects to `games-2026.html`). Data is read straight from Hugging Face
 (`huggingface.co/datasets/24601p/cfb-data`), so every `cfbd_pipeline.py --upload` shows up
 on the site without a rebuild.
 
 | Dashboard | What it is |
 |---|---|
-| `games-2025`, `games-2026` | One scoreboard card per game. Filter by team, conference, week and division (all in the URL as `$TEAM`, `$CONFERENCE`, `$GAME_WEEK`, `$DIVISION`); sort by kickoff, thrill index, CFBD excitement, closest finish, most points or biggest upset (`~sort=`). Every card opens with its drive chart (hide it per card), under a legend that toggles off (`~legend=`); with one team picked, the Up / Down / Default direction control (`~orient=`) points its drives. Each card links to the other team's full season, and to the game on ESPN and Game on Paper (the feed's game id is the ESPN game id). Kickoff times are converted from the feed's naive US/Pacific wall clock to a real instant and shown in the reader's own time zone, zone abbreviation included. Picking a conference clears the team, and a team link clears the conference, week and division — either filter alone is what the reader asked for. |
+| `games-2026` | One scoreboard card per game. Filter by team, conference, week and division (all in the URL as `$TEAM`, `$CONFERENCE`, `$GAME_WEEK`, `$DIVISION`); sort by kickoff, thrill index, CFBD excitement, closest finish, most points or biggest upset (`~sort=`). Every card opens with its drive chart (hide it per card), under a legend that toggles off (`~legend=`); with one team picked, the Up / Down / Default direction control (`~orient=`) points its drives. Each card links to the other team's full season, and to the game on ESPN and Game on Paper (the feed's game id is the ESPN game id). Kickoff times are converted from the feed's naive US/Pacific wall clock to a real instant and shown in the reader's own time zone, zone abbreviation included. Picking a conference clears the team, and a team link clears the conference, week and division — either filter alone is what the reader asked for. |
 | `about` | Credits: the data, the drive-chart design, Malloy and Malloyyo, and who made it. A route the shell owns — not a dashboard — served as `about.html`. |
 | `team-rankings` | One wide table of every team — record, points for and allowed, margin, offensive and defensive drive efficiency (points per drive, yards per play, Eckel rate, TD / explosive / three-and-out / turnover rates), Elo and strength of schedule. Click a header to re-rank (`~sort=`, `~dir=`). |
 
@@ -15,7 +16,7 @@ on the site without a rebuild.
 
 | File | |
 |---|---|
-| `raw.malloy` | The Hugging Face parquet, both seasons stacked; plus `team_games_raw`, each game unpivoted to one row per team |
+| `raw.malloy` | The Hugging Face parquet, the 2026 season; plus `team_games_raw`, each game unpivoted to one row per team |
 | `games.malloy` | `games_base` — adapted from `../games.malloy`; adds season/week labels, line-score parsing and the **thrill index** |
 | `drives.malloy` | `drives_base` — adapted from `../drives.malloy` (garbage time, score repair, chart geometry); adds **Eckel rate** |
 | `teams.malloy` | `team_games` — one row per team per game, joined to the drives it ran and defended |

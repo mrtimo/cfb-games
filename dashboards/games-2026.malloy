@@ -9,7 +9,7 @@
 //
 //  The component (games-2026.tsx) is generated from
 //  components/games-report.tsx by sync-components.mjs and is identical
-//  to games-2025.tsx: everything season-specific lives in THIS file.
+//  to any other season's report: everything season-specific lives in THIS file.
 //  Edit the component there, not here.
 // =====================================================================
 

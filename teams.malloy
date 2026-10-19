@@ -16,7 +16,7 @@ import "raw.malloy"
 import "drives.malloy"
 
 #|(doc)
-  One row per team per game in the 2025 and 2026 seasons: every game appears twice, once
+  One row per team per game in the 2026 season: every game appears twice, once
   from each team's side, with points for and against, the team's and opponent's conference
   and division, and pregame and postgame Elo. Joins the drives the team ran and the drives it
   defended, so a team's record, scoring margin and drive efficiency on both sides of the ball

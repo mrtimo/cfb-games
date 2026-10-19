@@ -161,7 +161,6 @@ export default function Dashboard({ dashboard, givens }: any) {
       </p>
 
       <Controls>
-        <Given name="SEASON" />
         <Given name="DIVISION" />
         <Given name="CONFERENCE" />
         <Given name="EXCLUDE_GARBAGE" />

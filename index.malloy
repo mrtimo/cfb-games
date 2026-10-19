@@ -1,5 +1,5 @@
 // =====================================================================
-//  INDEX — the published query surface, 2025 and 2026 seasons
+//  INDEX — the published query surface, 2026 season
 //
 //  games.malloy, drives.malloy and teams.malloy hold the documented base
 //  sources. This file joins games and drives on game id and exports the
@@ -22,7 +22,7 @@ source: game_drive_counts is drives_raw -> {
 }
 
 #|(doc)
-  One row per college football game in the 2025 and 2026 seasons, with every drive of that
+  One row per college football game in the 2026 season, with every drive of that
   game joined in. Carries the final score, line score, venue, conferences, Elo, CFBD's
   excitement rating and a box-score thrill index, plus drive-level totals. Use it for
   schedules, results, the most exciting games, and game summaries.
@@ -60,7 +60,7 @@ source: games is games_base extend {
 }
 
 #|(doc)
-  One row per drive (possession) of the 2025 and 2026 college football seasons, with the game
+  One row per drive (possession) of the 2026 college football season, with the game
   it was played in joined in. Use it for offensive and defensive drive efficiency, Eckel rate,
   field position, scoring rates, and drive-by-drive game charts.
 |#

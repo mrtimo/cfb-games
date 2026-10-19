@@ -349,7 +349,7 @@ const site = {
 const link = (href, text) => `<a href="${href}" target="_blank" rel="noreferrer noopener">${text}</a>`;
 const ABOUT_HTML = `<div id="about" class="home" hidden><main class="index">
 <h1>About</h1>
-<p class="about-note">Every game of the 2025 and 2026 college football seasons: the line score, a thrill index, a drive chart of every possession, and team rankings. The data is queried in your browser — there is no server.</p>
+<p class="about-note">Every game of the 2026 college football season: the line score, a thrill index, a drive chart of every possession, and team rankings. The data is queried in your browser — there is no server.</p>
 <ul class="about-list">
 <li><strong>Data</strong>${link("https://collegefootballdata.com/", "collegefootballdata.com")}</li>
 <li><strong>Original design for the drive charts</strong>${link("https://bcftoys.com/whiteboard/possession-flow", "BCFToys · possession flow")}</li>
@@ -361,9 +361,9 @@ const ABOUT_HTML = `<div id="about" class="home" hidden><main class="index">
 // ---- page metadata (search engines and link previews) ------------------
 const PAGES = {
   "": {
-    title: "College Football Drive Charts — 2025 & 2026 Games",
+    title: "College Football Drive Charts — 2026 Games",
     description:
-      "Every 2025 and 2026 college football game as a drive chart: every possession, the line score and a thrill index, plus team rankings by drive efficiency. Free, and it runs in your browser.",
+      "Every 2026 college football game as a drive chart: every possession, the line score and a thrill index, plus team rankings by drive efficiency. Free, and it runs in your browser.",
   },
   about: {
     title: `About · ${TITLE}`,
@@ -373,11 +373,6 @@ const PAGES = {
     title: "2026 College Football Games & Drive Charts",
     description:
       "Every 2026 college football game with its line score, thrill index and a drive chart of every possession. Filter by team, conference or week; sort by the most exciting games.",
-  },
-  "games-2025": {
-    title: "2025 College Football Games & Drive Charts",
-    description:
-      "Every 2025 college football game with its line score, thrill index and a drive chart of every possession. Filter by team, conference or week; sort by the most exciting games.",
   },
   "team-rankings": {
     title: "College Football Team Rankings — Drive Efficiency, Elo & Strength of Schedule",
@@ -413,14 +408,14 @@ const jsonLd = JSON.stringify({
     },
     {
       "@type": "Dataset",
-      name: "College football games and drives, 2025–2026",
+      name: "College football games and drives, 2026",
       description:
-        "Game results, line scores and drive-by-drive possessions for every 2025 and 2026 college football game, with a thrill index and drive-efficiency measures, explorable as drive charts.",
+        "Game results, line scores and drive-by-drive possessions for every 2026 college football game, with a thrill index and drive-efficiency measures, explorable as drive charts.",
       url: SITE_URL,
       keywords: ["college football", "drive chart", "CFB", "sports analytics", "FBS", "Malloy"],
       creator: { "@type": "Person", name: AUTHOR.name, url: AUTHOR.url },
       isBasedOn: "https://collegefootballdata.com/",
-      temporalCoverage: "2025/2026",
+      temporalCoverage: "2026",
     },
   ],
 }).replace(/</g, "\\u003c");
@@ -495,7 +490,7 @@ ${ICON}
   .join("")}<a href="./about.html" data-route="about">About</a><span id="status" class="status" role="status"><i></i><span></span></span><span class="credit">Built by <a href="${AUTHOR.url}" target="_blank" rel="noopener">${esc(AUTHOR.name)}</a><span class="school">· ${esc(AUTHOR.affiliation)}</span></span></nav>
 <div id="stage" class="stage">
 <div id="home" class="home"><main class="index"><h1>${esc(TITLE)}</h1>
-<p class="about-note">Every game of the 2025 and 2026 college football seasons as a drive chart — every possession drawn up and down the field — with the line score, a thrill index for the most exciting games, and team rankings by drive efficiency.</p>
+<p class="about-note">Every game of the 2026 college football season as a drive chart — every possession drawn up and down the field — with the line score, a thrill index for the most exciting games, and team rankings by drive efficiency.</p>
 <ul>${site.dashboards
   .map(
     (d) =>
@@ -538,6 +533,36 @@ window.__GIVENS__ = ${safeJson(d.givens)};
 </script>
 <script type="module" src="../assets/frames/${encodeURIComponent(d.name)}.js?v=${v.frame[d.name]}"></script>
 </body>
+</html>
+`
+  );
+}
+
+// ---- retired pages --------------------------------------------------------
+// The site used to carry the 2025 season. Links to it that are already out
+// there land on the 2026 games instead (keeping the team and view settings)
+// rather than on a 404.
+const RETIRED = { "games-2025": "games-2026" };
+for (const [from, to] of Object.entries(RETIRED)) {
+  if (dashboards.some((d) => d.name === from)) continue;
+  fs.writeFileSync(
+    path.join(out, `${from}.html`),
+    `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<link rel="canonical" href="${SITE_URL}${to}.html">
+<meta http-equiv="refresh" content="0; url=./${to}.html">
+<title>${esc(TITLE)}</title>
+<script>
+// keep the team and view settings; drop the season and a shared 2025 game
+const p = new URLSearchParams(location.search);
+for (const k of [...p.keys()]) if (/^[$~]?(season|game)$/i.test(k)) p.delete(k);
+location.replace("./${to}.html" + (p.toString() ? "?" + p : ""));
+</script>
+</head>
+<body><p>The 2025 season is no longer on this site. <a href="./${to}.html">See the 2026 games</a>.</p></body>
 </html>
 `
   );

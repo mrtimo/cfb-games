@@ -777,7 +777,7 @@ export function DriveChart({
 //  Games report — the page
 //
 //  One scoreboard card per game, from the dashboard's own query (named
-//  in its # artifact, so the 2025 and 2026 reports share this component).
+//  in its # artifact, so a report for another season can share this component).
 //  The .malloy file owns every filter (team, conference, division, week
 //  and the pinned season); this component owns what the reader does with
 //  the result: the sort order, paging, and the drive charts.

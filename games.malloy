@@ -102,7 +102,7 @@ source: games_scored is games_thrill_parts extend {
 } -> { select: * }
 
 #|(doc)
-  One row per college football game in the 2025 and 2026 seasons, across every division: FBS, FCS, Division II
+  One row per college football game in the 2026 season, across every division: FBS, FCS, Division II
   and Division III. Each game carries the final score, venue and announced attendance,
   the conference and division of both teams, pregame and postgame Elo ratings, postgame
   win probability, an excitement rating, and College Football Playoff bracket details
@@ -117,7 +117,7 @@ include {
     #(doc) Unique identifier for the game. Join key to the drives data, whose GameId column holds the same value.
     Id
 
-    #(doc) Season year the game belongs to: 2025 or 2026. A season's bowls and playoff games played in January still belong to the season that started in August.
+    #(doc) Season year the game belongs to (2026 on the site). A season's bowls and playoff games played in January still belong to the season that started in August.
     Season
 
     #(doc) Week of the season the game was played in, numbered within the season type. Regular-season weeks run 1 to 16; postseason bowl and playoff games carry their own week numbers.
